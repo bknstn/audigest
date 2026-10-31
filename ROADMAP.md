@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, and Iteration 2a direct remote transcript/caption URL ingestion are implemented and review-accepted. The North Star MVP is not complete: remote media and publisher/video-platform transcript acquisition, additional STT providers, and canonical-transcript processors remain to be built. The current resume point is Iteration 2b, remote media and publisher acquisition. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs) and 2b (direct media URLs and supplied transcripts) are implemented and review-accepted. Iteration 2b passed 205 offline tests. The North Star MVP is not complete: the current resume point is a small Iteration 2c for YouTube captions-first acquisition. Automatic publisher discovery, RSS, and Spotify metadata/enclosure support are separate later slices, followed by additional STT providers and canonical-transcript processors. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -28,14 +28,26 @@ The local transcript vertical slice, including the explicit STT-only command, an
 - Remote GETs have bounded socket/total timeouts, redirect targets are limited to HTTP(S) without URL userinfo, response bodies are limited to 2 MiB, and query/fragment values are omitted from persisted URIs and diagnostics.
 - Remote responses are fetched and parsed before cache lookup. Cache identity includes a hash of the full query-bearing locator and response bytes; remote text URLs never select STT, even with `--provider openai`.
 - No remote media, publisher discovery, feed resolution, or video-platform caption retrieval is included in this slice. Offline tests mock all HTTP boundaries.
-- Implementation is accepted; offline suite: 190 tests passed. Iteration 2b is the current resume point and has not started.
+- Implementation is accepted; offline suite: 190 tests passed.
 
-### Iteration 2b — Remote media and publisher transcript acquisition
+### Iteration 2b — Direct remote media and supplied transcripts
 
-- Add bounded source adapters for approved direct media URLs and publisher/podcast routes. Resolve RSS or Spotify episode metadata to publisher-hosted enclosures when possible; never download or rip Spotify streams.
-- Acquire publisher-provided transcripts and captions before STT. For YouTube, use available captions first and consider STT only when captions are unavailable and an explicit fallback provider is configured.
-- Download or generate media only when required. Use temporary storage and clean up by default; retain tool-created media only with explicit `--keep-media`. This never applies to user-owned local originals.
-- Mock remote boundaries in offline tests; test ambiguous and malformed routes without live requests.
+- `ingest` accepts direct HTTP(S) media URLs and a `--transcript` local file or direct transcript URL for local or remote media. The selected transcript precedes sidecars, cache lookup, and STT; remote media is not downloaded when a transcript is supplied.
+- Without a supplied transcript, stream remote media to temporary storage under a 100 MiB cap, clean it up after processing, and retain it only after success when `--keep-media` is selected. Existing retained files are reused only when contents match; never overwrite user files or follow symlinks.
+- Cache identities include the full remote media locator hash and bytes, or the media identity plus supplied transcript URI/content identity. Fetch media before cache lookup to detect changed bytes, while reusing prior STT work.
+- Implementation is accepted; offline suite: 205 tests passed, and Ruff lint/format checks and mypy passed. Tests mock all HTTP boundaries, provider calls, failures, and retention.
+
+### Iteration 2c — YouTube captions-first acquisition
+
+- Use available YouTube captions before considering STT, with explicit, bounded acquisition behavior.
+- Keep caption parsing and provenance in the canonical transcript contract; do not add authentication bypass or live test dependencies.
+- Scope and acceptance tests will be selected as a separate small iteration before implementation.
+
+### Iteration 2d — Publisher, RSS, and Spotify metadata discovery
+
+- Add bounded publisher routes and discover existing publisher-provided transcripts/captions before STT.
+- RSS and Spotify support may resolve public metadata to publisher-hosted enclosures; never download or rip a Spotify stream.
+- Keep ambiguous, malformed, and inaccessible routes actionable without authentication bypass or live test dependencies.
 
 ### Iteration 3 — ElevenLabs STT adapter
 

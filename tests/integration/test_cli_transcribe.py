@@ -303,7 +303,7 @@ def test_direct_canonical_json_preserves_transcript_content_without_selecting_pr
         "uri": transcript_file.resolve().as_uri(),
         "format": "json",
     }
-    assert "Using existing local transcript" in result.stderr
+    assert "Using existing transcript" in result.stderr
 
 
 def test_embedded_canonical_origin_survives_cache_round_trip(
@@ -367,7 +367,7 @@ def test_utf8_text_is_acquired_as_untimed_transcript_even_with_provider_option(
     assert all(
         segment["start"] is None and segment["end"] is None for segment in payload["segments"]
     )
-    assert "Using existing local transcript" in result.stderr
+    assert "Using existing transcript" in result.stderr
 
 
 def test_markdown_input_preserves_content_origin_and_cache_behavior(
@@ -746,7 +746,7 @@ def test_new_sidecar_takes_precedence_over_prior_fake_cache(
     assert acquired_payload["provider"] == "text"
     assert acquired_payload["text"] == "New sidecar transcript wins over older STT cache."
     assert acquired_payload["id"] != prior_payload["id"]
-    assert "Using existing local transcript" in acquired.stderr
+    assert "Using existing transcript" in acquired.stderr
 
     transcribed_again = runner.invoke(
         app, ["transcribe", str(media_file), "--provider", "auto", "--json"]
@@ -989,7 +989,7 @@ def test_invalid_arguments_exit_two_with_no_stdout(command: str) -> None:
     ("source", "provider", "expected_code", "message"),
     [
         ("/definitely/missing/audigest.wav", "fake", 3, "does not exist"),
-        ("https://example.com/audio.wav", "fake", 3, "local file"),
+        ("ftp://example.com/audio.wav", "fake", 3, "Unsupported URL scheme"),
         ("http://[", "fake", 3, "invalid source"),
         (str(FIXTURE), "auto", 5, "does not select an STT provider"),
         (str(FIXTURE), "openai", 5, "OPENAI_API_KEY"),

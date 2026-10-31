@@ -2,7 +2,7 @@
 
 Audigest is designed to turn spoken media into reusable transcripts, then apply focused tools to those transcripts from the command line. Transcript acquisition is strategy-first: reuse local transcripts, captions, or text when available, and use STT only as a fallback.
 
-Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt` and `.md`, `.srt`, and `.vtt` directly, including explicitly supplied HTTP(S) URLs ending in those formats. Markdown is a direct input only. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. For example, `episode.mp3` checks `episode.transcript.json`, `episode.vtt`, `episode.srt`, and `episode.txt`. It reuses a valid matching cached transcript before attempting STT. If an existing candidate is malformed, Audigest reports the problem and does not silently skip it to invoke STT. Remote transcript URLs are fetched anew before cache lookup so changed remote content invalidates the cache.
+Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt` and `.md`, `.srt`, and `.vtt` directly, including explicitly supplied HTTP(S) URLs ending in those formats. `ingest` also accepts direct HTTP(S) media URLs. Markdown is a direct input only. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. An explicit `--transcript` takes priority over those sidecars. It reuses a valid matching cached transcript before attempting STT. If a selected transcript is malformed, Audigest reports the problem and does not silently skip it to invoke STT. Remote sources are fetched before cache lookup so changed content invalidates the cache.
 
 For `ingest`, provider selection applies only after no usable transcript, caption, text, or matching cache is available. `transcribe` is the separate explicit STT-only command for local media. The deterministic `fake` provider is an offline option for exercising STT; it does not recognize speech or describe audio. Explicitly selecting `openai` enables the OpenAI API for the ingest fallback or explicit transcribe path. `auto` never selects an STT provider, even when `OPENAI_API_KEY` is set. Other providers are not implemented.
 
@@ -15,6 +15,8 @@ uv sync --all-groups
 uv run audigest --help
 uv run audigest ingest tests/fixtures/sample.wav --provider fake
 uv run audigest transcribe ./episode.mp3 --provider openai
+uv run audigest ingest ./episode.mp3 --transcript ./notes.vtt
+uv run audigest ingest https://cdn.example/episode.mp3 --provider fake
 ```
 
 The fixture is a one-second, generated 440 Hz tone, not speech. Its deterministic output is only a smoke-test transcript; it does not represent the sound in the file.
@@ -30,7 +32,9 @@ uv run audigest ingest ./episode.srt
 uv run audigest ingest https://publisher.example/transcript.vtt
 ```
 
-Direct HTTP(S) transcript ingestion currently supports only `.txt`, `.md`, `.json`, `.srt`, and `.vtt` URLs. It performs a bounded unauthenticated GET (15-second socket timeout, 60-second total deadline, 2 MiB maximum response); it does not fetch remote media or discover publisher transcripts. URL userinfo is rejected, only HTTP(S) redirects are followed, and query/fragment values are omitted from stored source/origin URIs.
+Direct HTTP(S) transcript ingestion supports `.txt`, `.md`, `.json`, `.srt`, and `.vtt` URLs. Direct HTTP(S) audio/video URLs use `ingest` and the selected STT provider when no transcript is supplied. Both use unauthenticated GETs with a 15-second socket timeout, 60-second total deadline, and at most five validated HTTP(S) redirects. Transcript bodies are limited to 2 MiB; media downloads are streamed to a temporary file and limited to 100 MiB. URL userinfo is rejected. Query and fragment values are omitted from stored source/origin URIs, while a hash of the full locator distinguishes cache entries. Every remote source is downloaded again to validate current content before cache lookup; a matching STT result avoids retranscription. Publisher discovery, feeds, and video-platform captions are not implemented yet.
+
+When a transcript is supplied for a local or remote media source, `ingest --transcript <file-or-url>` parses it before sidecar/cache/STT handling. For remote media, this avoids fetching the audio/video entirely. A malformed or missing supplied transcript fails without STT fallback. A supplied canonical JSON keeps its embedded source and origin metadata.
 
 For explicit STT on local media, use `transcribe` with a selected provider:
 
@@ -74,11 +78,11 @@ The local-acquisition fingerprint is version `v2` to distinguish artifacts with 
 
 The canonical transcript is versioned JSON (`schema_version: "1"`). It contains an `id`; a source record (`type`, `uri`, and optional `title`, `author`, `published_at`, and `duration_seconds`); optional `origin`; `provider`, optional `model` and `language`, and `created_at`; `segments` (`text`, optional `speaker`, and optional `start`/`end`); and full `text` derived from the segments. New readers accept older schema-1 artifacts without `origin`; older strict readers that reject unknown fields may reject new artifacts containing it. Segment timestamps default to `null`; each segment must have both start and end timestamps or neither. Renderers omit timing when it is absent. Provider response objects stay at adapter boundaries.
 
-Local original media is read in place and is never copied or removed. `--keep-media` is for future generated or downloaded media only; it does not apply to local originals.
+Local original media is read in place and is never copied or removed. By default, downloaded remote media is deleted after ingestion. `--keep-media` retains successfully downloaded remote media under `<cache>/media/<source-fingerprint>.<extension>` and reports its path; it never applies to local originals or sources that used a supplied transcript without downloading media.
 
 ## Command status
 
-`ingest` is transcript-first: it reads direct local transcript/text/caption inputs, fetches an explicitly supplied direct HTTP(S) transcript/caption URL, then checks applicable local sidecars and cache before STT fallback. Use it when you want Audigest to choose the best available transcript. Remote media URLs, publisher discovery, feeds, and video-platform captions are not implemented in this slice.
+`ingest` is transcript-first: a supplied `--transcript` wins first; otherwise it reads direct local transcript/text/caption inputs or fetches an explicitly supplied direct HTTP(S) transcript/caption URL, then checks applicable local sidecars and cache before STT fallback. Direct HTTP(S) media URLs are downloaded only if no transcript is supplied. The media is bounded to 100 MiB and stored temporarily during provider processing; `--keep-media` retains it only after successful ingestion. Automatic publisher discovery, feeds, and video-platform captions are not implemented in this slice.
 
 `transcribe` is an explicit STT-only command for supported local audio/video media. It ignores all transcript sidecars, even malformed ones, and rejects direct JSON, text, Markdown, SRT, and VTT files with a suggestion to use `ingest`. It checks the matching raw-media STT cache before calling the selected provider. Both commands share prior STT work, but acquired transcript/caption cache entries cannot satisfy `transcribe`. This intentionally replaces the previous compatibility-alias behavior; use `ingest` for transcript-first behavior.
 
@@ -135,7 +139,7 @@ The output contract keeps stdout suitable for piping: human-mode progress and di
 | `0` | Success |
 | `2` | Invalid arguments/configuration or local storage failure |
 | `3` | Source resolution failure, including a transcript ID absent from the local cache |
-| `4` | Remote transcript/caption retrieval failure |
+| `4` | Remote transcript/caption or media retrieval failure |
 | `5` | STT provider failure |
 | `7` | Missing local dependency |
 
@@ -155,4 +159,4 @@ Tests and CI are deterministic and do not call paid APIs or require credentials.
 
 ## Roadmap
 
-The planned product will normalize media from supported sources into one provider-independent transcript format. Remote media, publisher/video-platform transcript discovery, additional STT providers, and transcript processors such as summaries, project application, and English-learning extraction are future work. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.
+The planned product will normalize media from supported sources into one provider-independent transcript format. Automatic publisher/video-platform transcript discovery, feeds, additional STT providers, and transcript processors such as summaries, project application, and English-learning extraction are future work. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.

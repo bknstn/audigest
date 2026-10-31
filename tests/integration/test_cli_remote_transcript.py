@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
+import os
+import shutil
 import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,8 +16,16 @@ import pytest
 from typer.testing import CliRunner
 
 from audigest.cli import app
-from audigest.models import SourceInfo, Transcript, TranscriptOrigin, TranscriptSegment
+from audigest.errors import StorageError
+from audigest.models import (
+    SourceInfo,
+    Transcript,
+    TranscriptDraft,
+    TranscriptOrigin,
+    TranscriptSegment,
+)
 from audigest.sources.remote import MAX_TRANSCRIPT_BYTES
+from audigest.stt.router import get_provider
 
 
 def prepare_environment(monkeypatch: pytest.MonkeyPatch, cache_dir: Path) -> None:
@@ -65,6 +76,58 @@ class RedirectResponse(FakeResponse):
     def read(self, size: int = -1) -> bytes:
         _ = size
         raise AssertionError("redirect response body must never be read")
+
+
+class FailingReadResponse(FakeResponse):
+    def read1(self, size: int = -1) -> bytes:
+        _ = size
+        raise http.client.IncompleteRead(b"partial", 100)
+
+
+def install_fake_stt(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail: bool = False,
+) -> tuple[list[Path], list[bytes]]:
+    paths: list[Path] = []
+    contents: list[bytes] = []
+
+    class Provider:
+        name = "fake"
+        model = "fake-v1"
+
+        def transcribe(self, media_path: Path, *, language: str | None = None) -> TranscriptDraft:
+            paths.append(media_path)
+            contents.append(media_path.read_bytes())
+            if fail:
+                raise RuntimeError("synthetic provider failure")
+            return TranscriptDraft(
+                provider=self.name,
+                model=self.model,
+                language=language,
+                segments=[TranscriptSegment(text="Synthetic downloaded audio transcript.")],
+            )
+
+    monkeypatch.setattr("audigest.service.get_provider", lambda _name: Provider())
+    return paths, contents
+
+
+def track_download_temp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    temporary_root = tmp_path / "tracked-download-temp"
+
+    class TemporaryDirectory:
+        def __init__(self, *, prefix: str) -> None:
+            _ = prefix
+
+        def __enter__(self) -> str:
+            temporary_root.mkdir()
+            return str(temporary_root)
+
+        def __exit__(self, *_: object) -> None:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+
+    monkeypatch.setattr("audigest.sources.remote.tempfile.TemporaryDirectory", TemporaryDirectory)
+    return temporary_root
 
 
 def install_responses(
@@ -596,3 +659,469 @@ def test_remote_ingest_artifact_can_be_shown_without_a_second_fetch(
     assert len(requests) == 1
     assert all(response.closed for response in opened)
     assert list((tmp_path / "cache").rglob("*.tmp")) == []
+
+
+def test_remote_media_download_is_streamed_cached_and_cleaned(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    media = b"synthetic remote audio bytes"
+    changed = b"changed remote audio bytes"
+    responses = [
+        FakeResponse(media),
+        FakeResponse(media),
+        FakeResponse(changed),
+        FakeResponse(changed),
+    ]
+    requests, opened = install_responses(monkeypatch, responses)
+    provider_paths, contents = install_fake_stt(monkeypatch)
+    runner = CliRunner()
+    url = "https://media.example/episode.mp3?token=synthetic-secret"
+
+    first = runner.invoke(app, ["ingest", url, "--provider", "fake", "--language", "en", "--json"])
+    cached = runner.invoke(app, ["ingest", url, "--provider", "auto", "--language", "en", "--json"])
+    changed_result = runner.invoke(
+        app, ["ingest", url, "--provider", "fake", "--language", "en", "--json"]
+    )
+    refreshed = runner.invoke(
+        app,
+        ["ingest", url, "--provider", "fake", "--language", "en", "--json", "--no-cache"],
+    )
+
+    assert all(result.exit_code == 0 for result in (first, cached, changed_result, refreshed))
+    first_payload = json.loads(first.stdout)
+    cached_payload = json.loads(cached.stdout)
+    changed_payload = json.loads(changed_result.stdout)
+    refreshed_payload = json.loads(refreshed.stdout)
+    assert cached_payload == first_payload
+    assert "Using cached transcript." in cached.stderr
+    assert changed_payload["id"] != first_payload["id"]
+    assert refreshed_payload["id"] == changed_payload["id"]
+    assert refreshed_payload["created_at"] != changed_payload["created_at"]
+    assert first_payload["source"] == {
+        "type": "direct",
+        "uri": "https://media.example/episode.mp3",
+        "title": None,
+        "author": None,
+        "published_at": None,
+        "duration_seconds": None,
+    }
+    assert first_payload["origin"]["uri"] == "https://media.example/episode.mp3"
+    assert contents == [media, changed, changed]
+    assert len(provider_paths) == 3
+    assert all(not path.exists() for path in provider_paths)
+    assert all(response.closed for response in opened)
+    assert len(requests) == 4
+    assert "synthetic-secret" not in first.stdout + first.stderr
+
+
+def test_remote_media_cache_isolated_by_language(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    install_responses(monkeypatch, [FakeResponse(b"audio") for _ in range(3)])
+    provider_paths, _contents = install_fake_stt(monkeypatch)
+    runner = CliRunner()
+    url = "https://media.example/lesson.wav"
+    english = runner.invoke(
+        app, ["ingest", url, "--provider", "fake", "--language", "en", "--json"]
+    )
+    polish = runner.invoke(app, ["ingest", url, "--provider", "fake", "--language", "pl", "--json"])
+    replay = runner.invoke(app, ["ingest", url, "--provider", "auto", "--language", "en", "--json"])
+
+    assert english.exit_code == polish.exit_code == replay.exit_code == 0
+    assert json.loads(english.stdout)["id"] != json.loads(polish.stdout)["id"]
+    assert json.loads(replay.stdout) == json.loads(english.stdout)
+    assert len(provider_paths) == 2
+
+
+def test_remote_media_locator_queries_have_distinct_cache_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    install_responses(monkeypatch, [FakeResponse(b"same audio"), FakeResponse(b"same audio")])
+    provider_paths, _contents = install_fake_stt(monkeypatch)
+    runner = CliRunner()
+    alpha = runner.invoke(
+        app,
+        ["ingest", "https://media.example/episode.mp3?token=alpha", "--provider", "fake", "--json"],
+    )
+    beta = runner.invoke(
+        app,
+        ["ingest", "https://media.example/episode.mp3?token=beta", "--provider", "fake", "--json"],
+    )
+
+    assert alpha.exit_code == beta.exit_code == 0
+    alpha_payload = json.loads(alpha.stdout)
+    beta_payload = json.loads(beta.stdout)
+    assert alpha_payload["id"] != beta_payload["id"]
+    assert alpha_payload["source"]["uri"] == beta_payload["source"]["uri"]
+    assert "alpha" not in alpha.stdout + alpha.stderr
+    assert "beta" not in beta.stdout + beta.stderr
+    assert len(provider_paths) == 2
+
+
+def test_remote_media_auto_cache_miss_does_not_select_paid_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    response = FakeResponse(b"uncached remote audio")
+    requests, opened = install_responses(monkeypatch, [response])
+    monkeypatch.setattr("audigest.service.get_provider", get_provider)
+
+    result = CliRunner().invoke(
+        app,
+        ["ingest", "https://media.example/uncached.mp3", "--provider", "auto", "--json"],
+    )
+
+    assert result.exit_code == 5
+    assert result.stdout == ""
+    assert "does not select an STT provider" in result.stderr
+    assert "OPENAI_API_KEY" not in result.stderr
+    assert len(requests) == 1
+    assert response.closed
+
+
+def test_supplied_local_transcript_precedes_sidecar_and_skips_remote_media_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    prepare_environment(monkeypatch, cache_dir)
+    media = tmp_path / "episode.wav"
+    media.write_bytes(b"synthetic local media")
+    media.with_suffix(".txt").write_text("Sidecar must lose.", encoding="utf-8")
+    supplied = tmp_path / "publisher.md"
+    supplied.write_text("# Supplied transcript\n\nIt wins.", encoding="utf-8")
+    result = CliRunner().invoke(
+        app,
+        ["ingest", str(media), "--transcript", str(supplied), "--provider", "openai", "--json"],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["source"]["uri"] == media.resolve().as_uri()
+    assert payload["origin"] == {
+        "kind": "text",
+        "uri": supplied.resolve().as_uri(),
+        "format": "md",
+    }
+    assert payload["text"] == "# Supplied transcript\n\nIt wins."
+
+    def unexpected_request(*_: object) -> Any:
+        pytest.fail("a supplied transcript must skip remote media download")
+
+    monkeypatch.setattr("audigest.sources.remote.urllib.request.build_opener", unexpected_request)
+    remote = CliRunner().invoke(
+        app,
+        [
+            "ingest",
+            "https://media.example/episode.mp3?signature=synthetic-secret",
+            "--transcript",
+            str(supplied),
+            "--provider",
+            "openai",
+            "--json",
+        ],
+    )
+    assert remote.exit_code == 0, remote.stderr
+    remote_payload = json.loads(remote.stdout)
+    assert remote_payload["source"]["uri"] == "https://media.example/episode.mp3"
+    assert remote_payload["origin"]["uri"] == supplied.resolve().as_uri()
+    assert "synthetic-secret" not in remote.stdout + remote.stderr
+    assert "Sidecar must lose." not in remote_payload["text"]
+
+
+def test_changed_supplied_transcript_invalidates_media_cache_without_stt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    media = tmp_path / "episode.wav"
+    media.write_bytes(b"synthetic audio")
+    transcript = tmp_path / "publisher.txt"
+    transcript.write_text("First supplied text.", encoding="utf-8")
+    runner = CliRunner()
+    first = runner.invoke(
+        app,
+        ["ingest", str(media), "--transcript", str(transcript), "--provider", "openai", "--json"],
+    )
+    transcript.write_text("Changed supplied text.", encoding="utf-8")
+    second = runner.invoke(
+        app,
+        ["ingest", str(media), "--transcript", str(transcript), "--provider", "openai", "--json"],
+    )
+
+    assert first.exit_code == second.exit_code == 0
+    first_payload = json.loads(first.stdout)
+    second_payload = json.loads(second.stdout)
+    assert first_payload["id"] != second_payload["id"]
+    assert first_payload["text"] == "First supplied text."
+    assert second_payload["text"] == "Changed supplied text."
+
+
+def test_supplied_remote_transcript_skips_remote_media_and_preserves_canonical_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    transcript_url = "https://publisher.example/existing.vtt?sig=synthetic-secret"
+    vtt = FakeResponse(b"WEBVTT\n\n00:01.000 --> 00:02.000\nPublisher cue.\n")
+    requests, opened = install_responses(monkeypatch, [vtt])
+    result = CliRunner().invoke(
+        app,
+        [
+            "ingest",
+            "https://media.example/episode.mp4?media-token=private",
+            "--transcript",
+            transcript_url,
+            "--provider",
+            "openai",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["source"]["uri"] == "https://media.example/episode.mp4"
+    assert payload["origin"] == {
+        "kind": "captions",
+        "uri": "https://publisher.example/existing.vtt",
+        "format": "vtt",
+    }
+    assert payload["segments"][0]["start"] == 1.0
+    assert requests == [(transcript_url, 15)]
+    assert vtt.closed
+    assert "private" not in result.stdout + result.stderr
+    assert "synthetic-secret" not in result.stdout + result.stderr
+
+    source_file = tmp_path / "preserved.json"
+    embedded_origin = TranscriptOrigin(
+        kind="captions", uri="https://publisher.example/embedded.vtt", format="vtt"
+    )
+    canonical = Transcript(
+        id="c" * 64,
+        source=SourceInfo(type="youtube", uri="https://represented.example/episode"),
+        origin=embedded_origin,
+        provider="existing-provider",
+        model="existing-model",
+        language="de",
+        created_at=datetime(2026, 10, 31, tzinfo=UTC),
+        segments=[TranscriptSegment(start=3.0, end=4.0, text="Canonical source.")],
+    )
+    source_file.write_text(canonical.model_dump_json(), encoding="utf-8")
+    canonical_result = CliRunner().invoke(
+        app,
+        [
+            "ingest",
+            "https://media.example/episode.wav",
+            "--transcript",
+            str(source_file),
+            "--json",
+        ],
+    )
+    assert canonical_result.exit_code == 0, canonical_result.stderr
+    canonical_payload = json.loads(canonical_result.stdout)
+    assert canonical_payload["source"] == canonical.source.model_dump(mode="json")
+    assert canonical_payload["origin"] == embedded_origin.model_dump(mode="json")
+    assert canonical_payload["provider"] == "existing-provider"
+
+
+def test_invalid_supplied_transcript_fails_without_sidecar_or_stt_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    prepare_environment(monkeypatch, cache_dir)
+    media = tmp_path / "episode.wav"
+    media.write_bytes(b"local media")
+    media.with_suffix(".txt").write_text("Valid sidecar must not be used.", encoding="utf-8")
+    missing = tmp_path / "missing.txt"
+    result = CliRunner().invoke(
+        app,
+        ["ingest", str(media), "--transcript", str(missing), "--provider", "fake", "--json"],
+    )
+    assert result.exit_code == 3
+    assert result.stdout == ""
+    assert "does not exist" in result.stderr
+    assert not (cache_dir / "items").exists()
+
+    malformed = FakeResponse(b"WEBVTT\n\ninvalid cue\n")
+    requests, opened = install_responses(monkeypatch, [malformed])
+    remote = CliRunner().invoke(
+        app,
+        [
+            "ingest",
+            "https://media.example/episode.wav",
+            "--transcript",
+            "https://publisher.example/captions.vtt?secret=synthetic-secret",
+            "--provider",
+            "fake",
+            "--json",
+        ],
+    )
+    assert remote.exit_code == 3
+    assert remote.stdout == ""
+    assert "synthetic-secret" not in remote.stderr
+    assert requests == [("https://publisher.example/captions.vtt?secret=synthetic-secret", 15)]
+    assert all(response.closed for response in opened)
+
+
+def test_transcript_option_is_restricted_to_ingest_media_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    direct_text = tmp_path / "notes.txt"
+    direct_text.write_text("Not a media source.", encoding="utf-8")
+    transcript = tmp_path / "captions.srt"
+    transcript.write_text("1\n00:00:01,000 --> 00:00:02,000\nCaption.\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        app,
+        ["ingest", str(direct_text), "--transcript", str(transcript), "--json"],
+    )
+    assert result.exit_code == 3
+    assert "only be used with an audio/video source" in result.stderr
+    transcribe_result = CliRunner().invoke(
+        app,
+        ["transcribe", str(tmp_path / "media.wav"), "--transcript", str(transcript)],
+    )
+    assert transcribe_result.exit_code == 2
+    assert transcribe_result.stdout == ""
+
+
+@pytest.mark.parametrize("failure", ["oversize", "declared_oversize", "truncated", "read_error"])
+def test_remote_media_download_failures_close_and_remove_partial_files(
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    temporary_root = track_download_temp(monkeypatch, tmp_path)
+    if failure == "oversize":
+        monkeypatch.setattr("audigest.sources.remote.MAX_REMOTE_MEDIA_BYTES", 8)
+        response = FakeResponse(b"123456789")
+    elif failure == "declared_oversize":
+        monkeypatch.setattr("audigest.sources.remote.MAX_REMOTE_MEDIA_BYTES", 8)
+        response = FakeResponse(b"short", {"Content-Length": "9"})
+    elif failure == "truncated":
+        response = FakeResponse(b"short", {"Content-Length": "10"})
+    else:
+        response = FailingReadResponse(b"")
+    install_responses(monkeypatch, [response])
+    result = CliRunner().invoke(
+        app,
+        ["ingest", "https://media.example/episode.mp3", "--provider", "fake", "--json"],
+    )
+
+    assert result.exit_code == 4
+    assert result.stdout == ""
+    assert response.closed
+    if failure == "declared_oversize":
+        assert response.bytes_read == 0
+    assert not temporary_root.exists()
+
+
+def test_remote_media_provider_and_store_failures_clean_temporary_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    prepare_environment(monkeypatch, cache_dir)
+    temporary_root = track_download_temp(monkeypatch, tmp_path)
+    responses = [FakeResponse(b"provider failure bytes"), FakeResponse(b"store failure bytes")]
+    _requests, opened = install_responses(monkeypatch, responses)
+    paths, _contents = install_fake_stt(monkeypatch, fail=True)
+    provider_failure = CliRunner().invoke(
+        app,
+        ["ingest", "https://media.example/provider.wav", "--provider", "fake", "--keep-media"],
+    )
+    assert provider_failure.exit_code == 5
+    assert paths and not paths[0].exists()
+    assert not temporary_root.exists()
+    assert not (cache_dir / "media").exists()
+
+    paths.clear()
+    storage_paths, _contents = install_fake_stt(monkeypatch)
+
+    def fail_store(*_: object, **__: object) -> Path:
+        raise StorageError("synthetic cache failure")
+
+    monkeypatch.setattr("audigest.service.FileTranscriptStore.put", fail_store)
+    store_failure = CliRunner().invoke(
+        app,
+        ["ingest", "https://media.example/store.wav", "--provider", "fake", "--keep-media"],
+    )
+    assert store_failure.exit_code == 2
+    assert storage_paths and not storage_paths[-1].exists()
+    assert not temporary_root.exists()
+    assert not (cache_dir / "media").exists()
+    assert all(response.closed for response in opened)
+
+
+def test_keep_media_is_opt_in_idempotent_and_never_overwrites_existing_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    prepare_environment(monkeypatch, cache_dir)
+    body = b"synthetic retained remote audio"
+    responses = [FakeResponse(body) for _ in range(5)]
+    install_responses(monkeypatch, responses)
+    provider_paths, _contents = install_fake_stt(monkeypatch)
+    runner = CliRunner()
+    url = "https://media.example/retained.wav?token=private"
+
+    first = runner.invoke(app, ["ingest", url, "--provider", "fake", "--keep-media", "--json"])
+    assert first.exit_code == 0, first.stderr
+    kept_line = next(
+        line for line in first.stderr.splitlines() if line.startswith("Kept downloaded media:")
+    )
+    kept_path = Path(kept_line.split(": ", 1)[1])
+    assert kept_path.is_file()
+    assert kept_path.read_bytes() == body
+    assert str(kept_path) not in first.stdout
+
+    repeated = runner.invoke(app, ["ingest", url, "--provider", "fake", "--keep-media", "--json"])
+    assert repeated.exit_code == 0, repeated.stderr
+    assert (
+        Path(
+            next(
+                line.split(": ", 1)[1]
+                for line in repeated.stderr.splitlines()
+                if line.startswith("Kept downloaded media:")
+            )
+        )
+        == kept_path
+    )
+    assert kept_path.read_bytes() == body
+
+    user_bytes = b"pre-existing cache user file"
+    kept_path.write_bytes(user_bytes)
+    mismatch = runner.invoke(app, ["ingest", url, "--provider", "fake", "--keep-media", "--json"])
+    assert mismatch.exit_code == 2
+    assert kept_path.read_bytes() == user_bytes
+
+    target = tmp_path / "user-original.wav"
+    target.write_bytes(b"untouched user original")
+    kept_path.unlink()
+    kept_path.symlink_to(target)
+    symlink_result = runner.invoke(
+        app, ["ingest", url, "--provider", "fake", "--keep-media", "--json"]
+    )
+    assert symlink_result.exit_code == 2
+    assert kept_path.is_symlink()
+    assert target.read_bytes() == b"untouched user original"
+    if hasattr(os, "mkfifo"):
+        kept_path.unlink()
+        os.mkfifo(kept_path)
+        fifo_result = runner.invoke(
+            app, ["ingest", url, "--provider", "fake", "--keep-media", "--json"]
+        )
+        assert fifo_result.exit_code == 2
+        assert kept_path.is_fifo()
+    assert len(provider_paths) == 1

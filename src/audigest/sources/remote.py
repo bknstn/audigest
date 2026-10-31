@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -21,6 +25,7 @@ from audigest.sources.base import (
 )
 
 MAX_TRANSCRIPT_BYTES = 2 * 1024 * 1024
+MAX_REMOTE_MEDIA_BYTES = 100 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 15
 TOTAL_REQUEST_TIMEOUT_SECONDS = 60
 _READ_CHUNK_SIZE = 64 * 1024
@@ -35,6 +40,25 @@ class RemoteTranscriptInput:
     resolved_source: ResolvedSource
     origin_uri: str
     locator_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteMediaInput:
+    """Downloaded remote media in a temporary directory and its cache identity."""
+
+    resolved_source: ResolvedSource
+    source_fingerprint: str
+    locator_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteMediaReference:
+    """Remote media identity available without downloading the media bytes."""
+
+    resolved_source: ResolvedSource
+    source_fingerprint: str
+    locator_fingerprint: str
+    suffix: str
 
 
 def _normalized_http_url(url: str) -> tuple[str, str]:
@@ -109,6 +133,156 @@ class _NoAutoRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._capture_redirect(request, fp, code, msg, headers)
 
 
+def _open_redirected_response(
+    request_url: str,
+    *,
+    deadline: float,
+    accept: str,
+) -> tuple[Any, str]:
+    """Follow validated redirects manually, closing each redirect without reading it."""
+
+    opener = urllib.request.build_opener(_NoAutoRedirectHandler())
+    redirect_count = 0
+    while True:
+        remaining_time = deadline - time.monotonic()
+        if remaining_time <= 0:
+            raise RetrievalError("Remote request exceeded its time limit")
+        request = urllib.request.Request(
+            request_url,
+            headers={"Accept": accept},
+            method="GET",
+        )
+        try:
+            response = opener.open(
+                request,
+                timeout=min(REQUEST_TIMEOUT_SECONDS, remaining_time),
+            )
+        except _RedirectResponse as redirect:
+            if redirect_count >= 5:
+                raise RetrievalError("Remote request exceeded the redirect limit") from None
+            if not redirect.location:
+                raise RetrievalError("Remote redirect has no target") from None
+            target = urljoin(request_url, redirect.location)
+            try:
+                request_url, _ = _normalized_http_url(target)
+            except SourceResolutionError:
+                raise RetrievalError("Remote redirect target is not allowed") from None
+            redirect_count += 1
+            continue
+        except RetrievalError:
+            raise
+        except urllib.error.HTTPError as exc:
+            try:
+                exc.close()
+            except Exception:
+                pass
+            raise RetrievalError("Remote request failed (HTTP or redirect error)") from None
+        except Exception:
+            raise RetrievalError("Remote request failed (HTTP or timeout error)") from None
+        return response, request_url
+
+
+def _check_content_length(response: Any, limit: int, label: str) -> int | None:
+    content_length = response.headers.get("Content-Length")
+    if content_length is None:
+        return None
+    normalized_length = content_length.strip()
+    if not re.fullmatch(r"[0-9]+", normalized_length):
+        raise RetrievalError(f"Remote {label} response has an invalid content length")
+    declared = int(normalized_length)
+    if declared > limit:
+        raise RetrievalError(f"Remote {label} exceeds the configured size limit")
+    return declared
+
+
+def remote_media_reference(url: str) -> RemoteMediaReference:
+    """Create the public identity of a direct remote media URL without fetching it."""
+
+    request_url, public_url = _normalized_http_url(url)
+    parsed = urlsplit(request_url)
+    suffix = PurePosixPath(unquote(parsed.path)).suffix.lower()
+    if suffix not in SUPPORTED_MEDIA_EXTENSIONS:
+        raise SourceResolutionError("Remote media URL must have a supported audio/video extension")
+    locator_fingerprint = hashlib.sha256(request_url.encode("utf-8")).hexdigest()
+    identity = hashlib.sha256(
+        json.dumps(["remote-media-locator-v1", locator_fingerprint]).encode("utf-8")
+    ).hexdigest()
+    resolved = ResolvedSource(
+        source_info=SourceInfo(type="direct", uri=public_url),
+        media_path=Path(f"source{suffix}"),
+        content_sha256=identity,
+    )
+    return RemoteMediaReference(
+        resolved_source=resolved,
+        source_fingerprint=identity,
+        locator_fingerprint=locator_fingerprint,
+        suffix=suffix,
+    )
+
+
+@contextmanager
+def fetch_remote_media(url: str) -> Iterator[RemoteMediaInput]:
+    """Stream supported remote media to a temporary file and clean it after use."""
+
+    reference = remote_media_reference(url)
+    deadline = time.monotonic() + TOTAL_REQUEST_TIMEOUT_SECONDS
+    try:
+        temporary_directory = tempfile.TemporaryDirectory(prefix="audigest-media-")
+    except Exception:
+        raise RetrievalError("Remote media temporary storage is unavailable") from None
+    with temporary_directory as temp_dir:
+        response, _final_url = _open_redirected_response(
+            _normalized_http_url(url)[0],
+            deadline=deadline,
+            accept="audio/*, video/*, application/octet-stream, */*",
+        )
+        media_path = Path(temp_dir) / f"source{reference.suffix}"
+        digest = hashlib.sha256()
+        total = 0
+        try:
+            with response, media_path.open("wb") as output:
+                declared_length = _check_content_length(response, MAX_REMOTE_MEDIA_BYTES, "media")
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise RetrievalError("Remote media request exceeded its time limit")
+                    read_size = min(_READ_CHUNK_SIZE, MAX_REMOTE_MEDIA_BYTES + 1 - total)
+                    chunk = getattr(response, "read1", response.read)(read_size)
+                    if time.monotonic() >= deadline:
+                        raise RetrievalError("Remote media request exceeded its time limit")
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_REMOTE_MEDIA_BYTES:
+                        raise RetrievalError("Remote media exceeds the 100 MiB size limit")
+                    digest.update(chunk)
+                    output.write(chunk)
+        except RetrievalError:
+            raise
+        except Exception:
+            raise RetrievalError(
+                "Remote media download failed or temporary storage was unavailable"
+            ) from None
+        if declared_length is not None and total != declared_length:
+            raise RetrievalError("Remote media response length did not match its content length")
+        media_hash = digest.hexdigest()
+        source_fingerprint = hashlib.sha256(
+            json.dumps(
+                ["remote-media-acquisition-v1", reference.locator_fingerprint, media_hash],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        resolved_source = ResolvedSource(
+            source_info=reference.resolved_source.source_info,
+            media_path=media_path,
+            content_sha256=media_hash,
+        )
+        yield RemoteMediaInput(
+            resolved_source=resolved_source,
+            source_fingerprint=source_fingerprint,
+            locator_fingerprint=reference.locator_fingerprint,
+        )
+
+
 def fetch_remote_transcript(url: str) -> RemoteTranscriptInput:
     """Fetch a bounded direct transcript URL without persisting its locator query."""
 
@@ -131,47 +305,14 @@ def fetch_remote_transcript(url: str) -> RemoteTranscriptInput:
 
     locator_url = request_url
     deadline = time.monotonic() + TOTAL_REQUEST_TIMEOUT_SECONDS
-    opener = urllib.request.build_opener(_NoAutoRedirectHandler())
+    response, _final_url = _open_redirected_response(
+        request_url,
+        deadline=deadline,
+        accept="text/plain, text/vtt, application/json, */*",
+    )
     try:
-        redirect_count = 0
-        while True:
-            remaining_time = deadline - time.monotonic()
-            if remaining_time <= 0:
-                raise RetrievalError("Remote transcript request exceeded its time limit")
-            request = urllib.request.Request(
-                request_url,
-                headers={"Accept": "text/plain, text/vtt, application/json, */*"},
-                method="GET",
-            )
-            try:
-                response = opener.open(
-                    request,
-                    timeout=min(REQUEST_TIMEOUT_SECONDS, remaining_time),
-                )
-            except _RedirectResponse as redirect:
-                if redirect_count >= 5:
-                    raise RetrievalError("Remote transcript exceeded the redirect limit") from None
-                if not redirect.location:
-                    raise RetrievalError("Remote transcript redirect has no target") from None
-                target = urljoin(request_url, redirect.location)
-                try:
-                    request_url, _ = _normalized_http_url(target)
-                except SourceResolutionError:
-                    raise RetrievalError(
-                        "Remote transcript redirect target is not allowed"
-                    ) from None
-                redirect_count += 1
-                continue
-            break
-
         with response:
-            content_length = response.headers.get("Content-Length")
-            if content_length is not None:
-                normalized_length = content_length.strip()
-                if not re.fullmatch(r"[0-9]+", normalized_length):
-                    raise RetrievalError("Remote transcript response has an invalid content length")
-                if int(normalized_length) > MAX_TRANSCRIPT_BYTES:
-                    raise RetrievalError("Remote transcript exceeds the 2 MiB size limit")
+            declared_length = _check_content_length(response, MAX_TRANSCRIPT_BYTES, "transcript")
 
             content = bytearray()
             while len(content) <= MAX_TRANSCRIPT_BYTES:
@@ -187,13 +328,14 @@ def fetch_remote_transcript(url: str) -> RemoteTranscriptInput:
                 content.extend(chunk)
             if len(content) > MAX_TRANSCRIPT_BYTES:
                 raise RetrievalError("Remote transcript exceeds the 2 MiB size limit")
+            if declared_length is not None and len(content) != declared_length:
+                raise RetrievalError(
+                    "Remote transcript response length did not match its content length"
+                )
     except RetrievalError:
         raise
-    except urllib.error.HTTPError as exc:
-        exc.close()
-        raise RetrievalError("Remote transcript request failed (HTTP or redirect error)") from None
     except Exception:
-        raise RetrievalError("Remote transcript request failed (HTTP or timeout error)") from None
+        raise RetrievalError("Remote transcript response could not be read") from None
 
     locator_fingerprint = hashlib.sha256(locator_url.encode("utf-8")).hexdigest()
     resolved_source = ResolvedSource(

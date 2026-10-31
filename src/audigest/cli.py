@@ -43,6 +43,7 @@ def main() -> None:
 def _run_source_command(
     source: str,
     *,
+    transcript: str | None,
     provider: str | None,
     language: str | None,
     json_output: bool,
@@ -52,14 +53,23 @@ def _run_source_command(
 ) -> None:
     typer.echo("Resolving source and checking the transcript cache...", err=True)
     try:
-        action = transcribe_source if explicit_stt else ingest_source
-        result = action(
-            source,
-            provider=provider,
-            language=language,
-            no_cache=no_cache,
-            keep_media=keep_media,
-        )
+        if explicit_stt:
+            result = transcribe_source(
+                source,
+                provider=provider,
+                language=language,
+                no_cache=no_cache,
+                keep_media=keep_media,
+            )
+        else:
+            result = ingest_source(
+                source,
+                transcript=transcript,
+                provider=provider,
+                language=language,
+                no_cache=no_cache,
+                keep_media=keep_media,
+            )
     except _ERRORS as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=error.exit_code) from None
@@ -69,8 +79,10 @@ def _run_source_command(
     elif result.used_stt:
         status = "Transcription complete."
     else:
-        status = "Using existing local transcript, caption, or text."
+        status = "Using existing transcript, caption, or text."
     typer.echo(status, err=True)
+    if result.retained_media_path is not None:
+        typer.echo(f"Kept downloaded media: {result.retained_media_path}", err=True)
 
     if json_output:
         typer.echo(render_json(result.transcript))
@@ -82,6 +94,11 @@ def _run_source_command(
                 f"Transcript ID: {result.transcript.id}",
                 f"JSON: {result.json_path}",
                 f"Markdown: {result.json_path.with_name('transcript.md')}",
+                *(
+                    (f"Media: {result.retained_media_path}",)
+                    if result.retained_media_path is not None
+                    else ()
+                ),
             )
         )
     )
@@ -91,8 +108,8 @@ def _ingest(
     source: str = typer.Argument(
         ...,
         help=(
-            "Local canonical JSON, UTF-8 text/Markdown, SRT/VTT captions, or audio/video path; "
-            "direct HTTP(S) transcript/caption URL. Timing may be unavailable."
+            "Local canonical JSON, UTF-8 text/Markdown, captions, or media path; direct HTTP(S) "
+            "transcript/caption or media URL. Timing may be unavailable."
         ),
     ),
     provider: str | None = typer.Option(
@@ -104,6 +121,11 @@ def _ingest(
         None,
         "--language",
         help="Optional language hint, such as 'en'.",
+    ),
+    transcript: str | None = typer.Option(
+        None,
+        "--transcript",
+        help="Use this local transcript file or direct HTTP(S) transcript URL for a media source.",
     ),
     json_output: bool = typer.Option(
         False,
@@ -118,12 +140,13 @@ def _ingest(
     keep_media: bool = typer.Option(
         False,
         "--keep-media",
-        help="Keep future generated media; local source files are read in place.",
+        help="Keep successfully downloaded remote media in the configured cache.",
     ),
 ) -> None:
     """Obtain the best available transcript before considering STT fallback."""
     _run_source_command(
         source,
+        transcript=transcript,
         provider=provider,
         language=language,
         json_output=json_output,
@@ -167,6 +190,7 @@ def _transcribe(
     """Run STT explicitly on local media without reading transcript sidecars."""
     _run_source_command(
         source,
+        transcript=None,
         provider=provider,
         language=language,
         json_output=json_output,
