@@ -7,7 +7,7 @@ from pathlib import Path
 from audigest.acquisition import LocalTranscriptAcquirer
 from audigest.config import load_config
 from audigest.errors import AudigestError, ProviderError, SourceResolutionError
-from audigest.models import Transcript
+from audigest.models import Transcript, TranscriptOrigin
 from audigest.renderers import render_markdown
 from audigest.sources.detect import detect_source
 from audigest.sources.local import LocalFileResolver
@@ -100,6 +100,15 @@ def transcribe(
             raise ProviderError(
                 f"Provider '{selected_provider.name}' failed while transcribing the local source."
             ) from None
+        draft = draft.model_copy(
+            update={
+                "origin": TranscriptOrigin(
+                    kind="stt",
+                    uri=resolved.source_info.uri,
+                    format=resolved.media_path.suffix.lower()[1:],
+                )
+            }
+        )
 
     cache_key = cache_id_for(
         resolved,
@@ -139,3 +148,21 @@ def transcribe(
         cached=False,
         used_stt=used_stt,
     )
+
+
+def show_transcript(
+    transcript_id: str,
+    *,
+    cache_dir: Path | str | None = None,
+    config_file: Path | str | None = None,
+) -> Transcript:
+    """Load an already stored transcript by cache ID without touching its source."""
+
+    config = load_config(cache_dir=cache_dir, config_file=config_file)
+    transcript = FileTranscriptStore(config.cache_dir).get(transcript_id)
+    if transcript is None:
+        raise SourceResolutionError(
+            f"Transcript '{transcript_id}' was not found in the local cache; "
+            "run 'audigest ingest <source>' first."
+        )
+    return transcript

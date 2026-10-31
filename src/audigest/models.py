@@ -57,6 +57,16 @@ class TranscriptSegment(BaseModel):
         return self
 
 
+class TranscriptOrigin(BaseModel):
+    """Where transcript material was obtained, distinct from the represented source."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["text", "captions", "canonical", "stt"]
+    uri: str = Field(min_length=1)
+    format: str | None = Field(default=None, min_length=1)
+
+
 def _segment_text(value: Any) -> str | None:
     if isinstance(value, TranscriptSegment):
         return value.text
@@ -85,6 +95,7 @@ class Transcript(BaseModel):
     schema_version: Literal["1"] = "1"
     id: str = Field(min_length=1)
     source: SourceInfo
+    origin: TranscriptOrigin | None = None
     provider: str = Field(min_length=1)
     model: str | None = None
     language: str | None = None
@@ -141,6 +152,7 @@ class TranscriptDraft(BaseModel):
     provider: str = Field(min_length=1)
     model: str | None = None
     language: str | None = None
+    origin: TranscriptOrigin | None = None
     segments: list[TranscriptSegment]
 
     @field_validator("provider")
@@ -167,6 +179,7 @@ class TranscriptDraft(BaseModel):
         return Transcript(
             id=id,
             source=source_info,
+            origin=self.origin,
             provider=self.provider,
             model=self.model,
             language=self.language,

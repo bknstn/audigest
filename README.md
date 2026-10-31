@@ -2,7 +2,7 @@
 
 Audigest is designed to turn spoken media into reusable transcripts, then apply focused tools to those transcripts from the command line. Transcript acquisition is strategy-first: reuse local transcripts, captions, or text when available, and use STT only as a fallback.
 
-Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt`, `.srt`, and `.vtt` directly. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. For example, `episode.mp3` checks `episode.transcript.json`, `episode.vtt`, `episode.srt`, and `episode.txt`. It reuses a valid matching cached transcript before attempting STT. If an existing candidate is malformed, Audigest reports the problem and does not silently skip it to invoke STT.
+Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt` and `.md`, `.srt`, and `.vtt` directly. Markdown is a direct input only. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. For example, `episode.mp3` checks `episode.transcript.json`, `episode.vtt`, `episode.srt`, and `episode.txt`. It reuses a valid matching cached transcript before attempting STT. If an existing candidate is malformed, Audigest reports the problem and does not silently skip it to invoke STT.
 
 Only if no usable transcript, caption, text, or matching cache is available does provider selection apply. The deterministic `fake` provider is an explicit fallback for exercising the pipeline; it does not recognize speech or describe audio. Explicitly selecting `openai` enables one real STT fallback through the OpenAI API. `auto` remains cache-only and never selects a network provider, even when `OPENAI_API_KEY` is set. Other providers are not implemented.
 
@@ -23,13 +23,23 @@ The fixture is a one-second, generated 440 Hz tone, not speech. Its deterministi
 ```bash
 uv run audigest ingest ./episode.transcript.json
 uv run audigest ingest ./episode.txt
+uv run audigest ingest ./episode.md
 uv run audigest ingest ./episode.vtt
 uv run audigest ingest ./episode.srt
 ```
 
-Plain text produces untimed transcript segments. Caption formats preserve their supplied timestamps. Rendering never invents timestamps for untimed text.
+Every successful ingest prints the saved transcript ID. Use it to read the stored transcript later, even if the original source has moved or been removed:
 
-When a canonical JSON transcript is imported, its source metadata, provider, model, language, segments, speakers, and timestamps are preserved. Audigest assigns a new cache artifact ID and sets `created_at` to the ingestion time.
+```bash
+uv run audigest show <transcript-id>
+uv run audigest show <transcript-id> --json
+```
+
+`show` reads the existing transcript entry in the configured local cache. It writes Markdown rendered from the stored canonical transcript to stdout by default or the canonical JSON object with `--json`; it does not resolve the original source, run acquisition or STT, or modify cache files. It uses the same cache-root precedence as ingestion, including `AUDIGEST_CACHE_DIR` and the optional TOML `cache_dir` setting.
+
+Text and Markdown produce one untimed segment containing the entire UTF-8 file content. A UTF-8 BOM is treated as an encoding marker. Caption formats preserve their supplied timestamps. Rendering never invents timestamps for untimed text.
+
+Canonical transcripts include optional `origin` metadata alongside `source`. `source` identifies the content represented by the transcript; `origin` identifies where the transcript text was obtained. Its `kind` is `text`, `captions`, `canonical`, or `stt`; `uri` is required and identifies the acquisition input; `format` is optional. When a canonical JSON transcript is imported, its source metadata, provider, model, language, segments, speakers, timestamps, and existing origin are preserved. If it has no origin, the imported JSON file is recorded as the origin. Audigest assigns a new cache artifact ID and sets `created_at` to the ingestion time.
 
 The initial CLI can render machine-readable output with `--json`:
 
@@ -50,13 +60,17 @@ In human mode, progress goes to stderr and the final result goes to stdout. In J
     transcript.md
 ```
 
-The canonical transcript is versioned JSON (`schema_version: "1"`). It contains an `id`; a source record (`type`, `uri`, and optional `title`, `author`, `published_at`, and `duration_seconds`); `provider`, optional `model` and `language`, and `created_at`; `segments` (`text`, optional `speaker`, and optional `start`/`end`); and full `text` derived from the segments. Segment timestamps default to `null`; each segment must have both start and end timestamps or neither. Renderers omit timing when it is absent. Provider response objects stay at adapter boundaries.
+The local-acquisition fingerprint is version `v2` to distinguish artifacts with explicit origin metadata. Existing cache entries for direct or adjacent transcript/text/caption files are rebuilt once from those local files, without STT. Cache identities for media that falls back to STT are unchanged.
+
+The canonical transcript is versioned JSON (`schema_version: "1"`). It contains an `id`; a source record (`type`, `uri`, and optional `title`, `author`, `published_at`, and `duration_seconds`); optional `origin`; `provider`, optional `model` and `language`, and `created_at`; `segments` (`text`, optional `speaker`, and optional `start`/`end`); and full `text` derived from the segments. New readers accept older schema-1 artifacts without `origin`; older strict readers that reject unknown fields may reject new artifacts containing it. Segment timestamps default to `null`; each segment must have both start and end timestamps or neither. Renderers omit timing when it is absent. Provider response objects stay at adapter boundaries.
 
 Local original media is read in place and is never copied or removed. `--keep-media` is for future generated or downloaded media only; it does not apply to local originals.
 
 ## Command status
 
 `transcribe` remains a compatibility alias for `ingest`. Both commands use the same transcript-first acquisition, cache, and STT fallback behavior and accept the same options. In particular, `--provider` selects the STT fallback; it does not force transcription when a transcript or caption is available. A separate explicit STT-only command remains future work.
+
+`show` accepts a saved transcript ID and the optional `--json` output flag. It renders the stored canonical transcript without using the source file or selecting an STT provider. It does not accept file paths or cache references.
 
 To enable the optional OpenAI SDK and explicitly use its fallback, install the `openai` extra and set an API key in the environment:
 
@@ -108,7 +122,7 @@ The output contract keeps stdout suitable for piping: human-mode progress and di
 | --- | --- |
 | `0` | Success |
 | `2` | Invalid arguments/configuration or local storage failure |
-| `3` | Source resolution failure |
+| `3` | Source resolution failure, including a transcript ID absent from the local cache |
 | `5` | STT provider failure |
 | `7` | Missing local dependency |
 

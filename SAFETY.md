@@ -11,6 +11,7 @@ Audigest reads audio, video, transcripts, captions, and text that may contain pr
 - A local original media, transcript, caption, or text file is user-owned input: read it in place; never copy it into the cache, modify it, or delete it.
 - If later source adapters generate or download media, keep those files in temporary storage and clean them up after processing by default. Retain only tool-generated/downloaded media when the user explicitly passes `--keep-media`. This option never grants permission to copy or remove a local original.
 - Cache pointers must distinguish source URI, effective content fingerprint (including selected sidecar contents), and requested language so changed local files or sidecars cannot reuse stale transcripts. Preserve actual provider/model provenance in the transcript, but do not let fallback provider selection suppress a valid matching cache entry.
+- `show <transcript-id>` reads only an existing canonical transcript from the local cache. It must not inspect the original source, select a provider, invoke acquisition/STT, or modify cache artifacts.
 - Do not add telemetry in the MVP.
 
 ## Fixtures and test data
@@ -23,7 +24,7 @@ Audigest reads audio, video, transcripts, captions, and text that may contain pr
 
 ## Network and source boundaries
 
-- Transcript-first ingestion reads local canonical transcript JSON, UTF-8 text, SRT/VTT captions, and deterministic adjacent sidecars before considering STT. The only current runtime network path is the explicit `--provider openai` fallback after cache lookup; `auto` never selects a provider or reads `OPENAI_API_KEY`.
+- Transcript-first ingestion reads local canonical transcript JSON, UTF-8 text/Markdown, SRT/VTT captions, and deterministic adjacent sidecars before considering STT. Markdown is accepted as a direct input only and does not alter sidecar discovery. The only current runtime network path is the explicit `--provider openai` fallback after cache lookup; `auto` never selects a provider or reads `OPENAI_API_KEY`.
 - A malformed existing transcript/text/caption candidate must fail clearly. Never skip malformed user content and invoke STT in its place; that could send audio to a provider or incur an unexpected cost.
 - STT is a fallback only. `--provider` selects that fallback and does not override an existing usable transcript or caption. `auto` reuses a matching valid cache before STT; if no cache matches and no provider is available, it must fail clearly.
 - Canonical segments may omit timing. A segment's start and end must either both be absent or both be valid timestamps. Renderers must not invent timestamps for untimed text.
@@ -34,4 +35,4 @@ Audigest reads audio, video, transcripts, captions, and text that may contain pr
 
 ## Scope guard
 
-Acquire existing local transcript/caption/text data and check the matching cache before STT. The deterministic fake provider is an offline fallback; OpenAI is available only when the user explicitly selects `--provider openai` and supplies `OPENAI_API_KEY`. `auto` reuses a matching valid cached transcript and otherwise fails without selecting a provider, even when an API key exists. Keep other real STT providers, LLMs, processors, project-context ingestion, RAG, embeddings, databases, and network-backed source resolution out of scope until separately authorized.
+Acquire existing local transcript/caption/text data and check the matching cache before STT. The deterministic fake provider is an offline fallback; OpenAI is available only when the user explicitly selects `--provider openai` and supplies `OPENAI_API_KEY`. `auto` reuses a matching valid cached transcript and otherwise fails without selecting a provider, even when an API key exists. The user has authorized the remaining North Star MVP items listed in `ROADMAP.md` for sequential, parent-reviewed iterations; implement only the currently selected item. RAG, embeddings, databases, GUI, background jobs, and telemetry remain out of scope.

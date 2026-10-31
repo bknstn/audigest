@@ -12,11 +12,17 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from audigest.errors import SourceResolutionError
-from audigest.models import SourceInfo, Transcript, TranscriptDraft, TranscriptSegment
-from audigest.sources.base import ResolvedSource
+from audigest.models import (
+    SourceInfo,
+    Transcript,
+    TranscriptDraft,
+    TranscriptOrigin,
+    TranscriptSegment,
+)
+from audigest.sources.base import SUPPORTED_TEXT_EXTENSIONS, ResolvedSource
 
 _SIDECAR_SUFFIXES = (".transcript.json", ".vtt", ".srt", ".txt")
-_FINGERPRINT_VERSION = "local-transcript-acquisition-v1"
+_FINGERPRINT_VERSION = "local-transcript-acquisition-v2"
 _TIMESTAMP = r"(?:\d{2,}:)?\d{2}:\d{2}[.,]\d{1,3}"
 _TIMING_LINE = re.compile(rf"^\s*(?P<start>{_TIMESTAMP})\s*-->\s*(?P<end>{_TIMESTAMP})(?:\s+.*)?$")
 
@@ -45,7 +51,7 @@ class LocalTranscriptAcquirer:
 
         source_path = resolved.media_path
         suffix = source_path.suffix.lower()
-        if suffix in {".txt", ".json", ".srt", ".vtt"}:
+        if suffix in SUPPORTED_TEXT_EXTENSIONS:
             return self._acquire_file(source_path)
 
         for sidecar_suffix in _SIDECAR_SUFFIXES:
@@ -83,20 +89,36 @@ class LocalTranscriptAcquirer:
             input_fingerprint,
             source_fingerprint,
         )
-        if suffix == ".txt":
+        if suffix in {".txt", ".md"}:
             if not content.strip():
                 raise SourceResolutionError("Text transcript input is empty")
             draft = TranscriptDraft(
                 provider="text",
                 model=None,
                 language=None,
+                origin=TranscriptOrigin(kind="text", uri=path.as_uri(), format=suffix[1:]),
                 segments=[TranscriptSegment(text=content)],
             )
         elif suffix == ".json":
             draft, canonical_source = self._canonical_json(content)
+            if draft.origin is None:
+                draft = draft.model_copy(
+                    update={
+                        "origin": TranscriptOrigin(
+                            kind="canonical", uri=path.as_uri(), format="json"
+                        )
+                    }
+                )
             source_info = canonical_source
         elif suffix in {".srt", ".vtt"}:
             draft = _caption_draft(content, suffix)
+            draft = draft.model_copy(
+                update={
+                    "origin": TranscriptOrigin(
+                        kind="captions", uri=path.as_uri(), format=suffix[1:]
+                    )
+                }
+            )
         else:
             raise SourceResolutionError("Unsupported transcript input type")
         return AcquisitionResult(
@@ -128,6 +150,7 @@ class LocalTranscriptAcquirer:
             provider=transcript.provider,
             model=transcript.model,
             language=transcript.language,
+            origin=transcript.origin,
             segments=transcript.segments,
         )
         return draft, transcript.source

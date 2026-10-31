@@ -7,7 +7,7 @@ import pytest
 
 from audigest.acquisition import LocalTranscriptAcquirer
 from audigest.errors import SourceResolutionError
-from audigest.models import SourceInfo, Transcript, TranscriptSegment
+from audigest.models import SourceInfo, Transcript, TranscriptOrigin, TranscriptSegment
 from audigest.sources.local import LocalFileResolver
 
 
@@ -45,20 +45,42 @@ def test_text_input_preserves_authored_lines_without_timestamps(tmp_path: Path) 
     assert result.draft.model is None
     assert result.draft.segments == [TranscriptSegment(text=authored)]
     assert result.draft.segments[0].start is None
+    assert result.draft.origin is not None
+    assert result.draft.origin.kind == "text"
+    assert result.draft.origin.uri == text_path.resolve().as_uri()
+    assert result.draft.origin.format == "txt"
     assert result.source_fingerprint != resolved.content_sha256
     assert len(result.source_fingerprint) == 64
     assert result.source_info is None
 
 
-def test_empty_or_non_utf8_text_fails_as_source_error(tmp_path: Path) -> None:
+def test_markdown_input_preserves_utf8_content_and_bom_is_only_encoding_marker(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "notes.md"
+    authored = "# Żółć и 中文\n\n- **First** line.\n\n```text\nraw code\n```\n"
+    input_path.write_bytes(b"\xef\xbb\xbf" + authored.encode("utf-8"))
+
+    result = LocalTranscriptAcquirer().acquire(LocalFileResolver().resolve(input_path))
+
+    assert result is not None
+    assert result.draft.provider == "text"
+    assert result.draft.segments == [TranscriptSegment(text=authored)]
+    assert result.draft.origin == TranscriptOrigin(
+        kind="text", uri=input_path.resolve().as_uri(), format="md"
+    )
+
+
+@pytest.mark.parametrize("suffix", [".txt", ".md"])
+def test_empty_or_non_utf8_text_fails_as_source_error(tmp_path: Path, suffix: str) -> None:
     resolver = LocalFileResolver()
     acquirer = LocalTranscriptAcquirer()
-    empty = tmp_path / "empty.txt"
+    empty = tmp_path / f"empty{suffix}"
     empty.write_text(" \n\t", encoding="utf-8")
     with pytest.raises(SourceResolutionError, match="empty"):
         acquirer.acquire(resolver.resolve(empty))
 
-    invalid = tmp_path / "invalid.txt"
+    invalid = tmp_path / f"invalid{suffix}"
     invalid.write_bytes(b"\xff")
     with pytest.raises(SourceResolutionError, match="UTF-8"):
         acquirer.acquire(resolver.resolve(invalid))
@@ -76,7 +98,24 @@ def test_canonical_json_preserves_source_and_transcript_provenance(tmp_path: Pat
     assert result.draft.model == original.model
     assert result.draft.language == original.language
     assert result.draft.segments == original.segments
+    assert result.draft.origin == TranscriptOrigin(
+        kind="canonical", uri=input_path.resolve().as_uri(), format="json"
+    )
     assert result.source_fingerprint != LocalFileResolver().resolve(input_path).content_sha256
+
+
+def test_canonical_json_preserves_embedded_origin(tmp_path: Path) -> None:
+    input_path = tmp_path / "existing.json"
+    embedded_origin = TranscriptOrigin(
+        kind="captions", uri="file:///original/captions.vtt", format="vtt"
+    )
+    original = _canonical_transcript().model_copy(update={"origin": embedded_origin})
+    input_path.write_text(original.model_dump_json(), encoding="utf-8")
+
+    result = LocalTranscriptAcquirer().acquire(LocalFileResolver().resolve(input_path))
+
+    assert result is not None
+    assert result.draft.origin == embedded_origin
 
 
 def test_invalid_canonical_json_fails_without_fallback(tmp_path: Path) -> None:
@@ -100,6 +139,9 @@ def test_srt_captions_are_parsed_with_timestamps(tmp_path: Path) -> None:
     assert result is not None
     assert result.draft.provider == "captions"
     assert result.draft.model is None
+    assert result.draft.origin == TranscriptOrigin(
+        kind="captions", uri=input_path.resolve().as_uri(), format="srt"
+    )
     assert result.draft.segments == [
         TranscriptSegment(start=1.25, end=2.5, text="Hello\nthere."),
         TranscriptSegment(start=2.5, end=3.75, text="Next cue."),
@@ -150,6 +192,9 @@ def test_sidecar_priority_and_effective_fingerprint(tmp_path: Path) -> None:
     assert first.draft.provider == "fake"
     assert first.source_info is not None
     assert first.source_info == _canonical_transcript().source
+    assert first.draft.origin == TranscriptOrigin(
+        kind="canonical", uri=canonical_path.resolve().as_uri(), format="json"
+    )
     assert first.source_fingerprint != resolved.content_sha256
 
     canonical_path.write_text(
@@ -223,5 +268,6 @@ def test_non_regular_sidecar_fails_without_blocking(tmp_path: Path) -> None:
 def test_no_sidecar_returns_none_for_stt_fallback(tmp_path: Path) -> None:
     media = tmp_path / "episode.wav"
     media.write_bytes(b"synthetic media")
+    (tmp_path / "episode.md").write_text("Markdown is direct input only.", encoding="utf-8")
 
     assert LocalTranscriptAcquirer().acquire(LocalFileResolver().resolve(media)) is None

@@ -32,7 +32,7 @@ SUPPORTED_MEDIA_EXTENSIONS = frozenset(
         ".wma",
     }
 )
-SUPPORTED_TEXT_EXTENSIONS = frozenset({".json", ".srt", ".txt", ".vtt"})
+SUPPORTED_TEXT_EXTENSIONS = frozenset({".json", ".md", ".srt", ".txt", ".vtt"})
 SUPPORTED_SOURCE_EXTENSIONS = SUPPORTED_MEDIA_EXTENSIONS | SUPPORTED_TEXT_EXTENSIONS
 
 

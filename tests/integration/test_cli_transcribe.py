@@ -11,7 +11,9 @@ from typer.testing import CliRunner
 
 from audigest.cli import app
 from audigest.errors import MissingDependencyError
-from audigest.models import SourceInfo, Transcript, TranscriptSegment
+from audigest.models import SourceInfo, Transcript, TranscriptOrigin, TranscriptSegment
+from audigest.sources.local import LocalFileResolver
+from audigest.storage import FileTranscriptStore, cache_id_for
 from audigest.stt.openai import OpenAITranscriptionProvider
 from audigest.stt.router import get_provider
 
@@ -68,6 +70,7 @@ def test_help_and_command_help_work() -> None:
     assert root_help.exit_code == 0
     assert "Usage: audigest" in root_help.stdout
     assert "ingest" in root_help.stdout
+    assert "show" in root_help.stdout
     assert "transcribe" in root_help.stdout
     assert "compatibility alias" in root_help.stdout
     assert ingest_help.exit_code == 0
@@ -165,6 +168,11 @@ def test_openai_cli_fallback_persists_and_replays_without_key(
     assert payload["model"] == "gpt-transcribe"
     assert payload["language"] == "en"
     assert payload["text"] == "Synthetic CLI transcription."
+    assert payload["origin"] == {
+        "kind": "stt",
+        "uri": FIXTURE.resolve().as_uri(),
+        "format": "wav",
+    }
     assert payload["segments"] == [
         {"start": None, "end": None, "text": "Synthetic CLI transcription.", "speaker": None}
     ]
@@ -269,7 +277,9 @@ def test_direct_canonical_json_preserves_transcript_content_without_selecting_pr
     prepare_environment(monkeypatch, tmp_path / "cache")
     transcript_file = tmp_path / "transcript.json"
     canonical = make_canonical_transcript()
-    transcript_file.write_text(canonical.model_dump_json(), encoding="utf-8")
+    legacy_payload = canonical.model_dump(mode="json")
+    legacy_payload.pop("origin")
+    transcript_file.write_text(json.dumps(legacy_payload), encoding="utf-8")
 
     result = CliRunner().invoke(app, [command, str(transcript_file), "--json"])
 
@@ -283,7 +293,49 @@ def test_direct_canonical_json_preserves_transcript_content_without_selecting_pr
     assert payload["segments"][0]["speaker"] == "Synthetic speaker"
     assert payload["segments"][0]["start"] == 1.0
     assert payload["text"] == canonical.text
+    assert payload["origin"] == {
+        "kind": "canonical",
+        "uri": transcript_file.resolve().as_uri(),
+        "format": "json",
+    }
     assert "Using existing local transcript" in result.stderr
+
+
+def test_embedded_canonical_origin_survives_cache_round_trip(
+    command: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    transcript_file = tmp_path / "with-origin.json"
+    embedded_origin = TranscriptOrigin(
+        kind="captions", uri="file:///synthetic/captions.vtt", format="vtt"
+    )
+    canonical = make_canonical_transcript().model_copy(update={"origin": embedded_origin})
+    transcript_file.write_text(canonical.model_dump_json(), encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(app, [command, str(transcript_file), "--provider", "auto", "--json"])
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["origin"] == embedded_origin.model_dump(mode="json")
+    assert payload["source"] == canonical.source.model_dump(mode="json")
+    assert payload["provider"] == canonical.provider
+    assert payload["model"] == canonical.model
+    assert payload["language"] == canonical.language
+    assert payload["segments"] == canonical.model_dump(mode="json")["segments"]
+    assert payload["created_at"] != canonical.model_dump(mode="json")["created_at"]
+    stored = json.loads(
+        (tmp_path / "cache" / "items" / payload["id"] / "transcript.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert stored["origin"] == embedded_origin.model_dump(mode="json")
+    replay = runner.invoke(app, [command, str(transcript_file), "--provider", "fake", "--json"])
+    assert replay.exit_code == 0, replay.stderr
+    assert json.loads(replay.stdout) == payload
+    assert "Using cached transcript." in replay.stderr
 
 
 def test_utf8_text_is_acquired_as_untimed_transcript_even_with_provider_option(
@@ -311,6 +363,70 @@ def test_utf8_text_is_acquired_as_untimed_transcript_even_with_provider_option(
         segment["start"] is None and segment["end"] is None for segment in payload["segments"]
     )
     assert "Using existing local transcript" in result.stderr
+
+
+def test_markdown_input_preserves_content_origin_and_cache_behavior(
+    command: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    prepare_environment(monkeypatch, cache_dir)
+    markdown_file = tmp_path / "notes.md"
+    authored = "# Żółć и 中文\n\n- **First** line.\n\n```text\nraw code\n```\n"
+    markdown_file.write_bytes(b"\xef\xbb\xbf" + authored.encode("utf-8"))
+    runner = CliRunner()
+
+    first = runner.invoke(app, [command, str(markdown_file), "--provider", "openai", "--json"])
+    cached = runner.invoke(app, [command, str(markdown_file), "--provider", "auto", "--json"])
+
+    assert first.exit_code == cached.exit_code == 0, first.stderr + cached.stderr
+    first_payload = json.loads(first.stdout)
+    assert first_payload["provider"] == "text"
+    assert first_payload["text"] == authored
+    assert first_payload["segments"] == [
+        {"start": None, "end": None, "text": authored, "speaker": None}
+    ]
+    assert first_payload["origin"] == {
+        "kind": "text",
+        "uri": markdown_file.resolve().as_uri(),
+        "format": "md",
+    }
+    assert json.loads(cached.stdout) == first_payload
+    assert "Using cached transcript." in cached.stderr
+    markdown_artifact = cache_dir / "items" / first_payload["id"] / "transcript.md"
+    rendered_markdown = markdown_artifact.read_text(encoding="utf-8")
+    assert "| Origin kind | text |" in rendered_markdown
+    assert f"| Origin URI | {markdown_file.resolve().as_uri()} |" in rendered_markdown
+
+    updated = authored + "\nA changed final paragraph.\n"
+    markdown_file.write_text(updated, encoding="utf-8")
+    changed = runner.invoke(
+        app,
+        [command, str(markdown_file), "--provider", "openai", "--json"],
+    )
+
+    assert changed.exit_code == 0, changed.stderr
+    changed_payload = json.loads(changed.stdout)
+    assert changed_payload["provider"] == "text"
+    assert changed_payload["text"] == updated
+    assert changed_payload["id"] != first_payload["id"]
+    assert "Using cached transcript." not in changed.stderr
+
+    no_cache = runner.invoke(
+        app,
+        [command, str(markdown_file), "--provider", "openai", "--json", "--no-cache"],
+    )
+    assert no_cache.exit_code == 0, no_cache.stderr
+    no_cache_payload = json.loads(no_cache.stdout)
+    assert no_cache_payload["id"] == changed_payload["id"]
+    assert no_cache_payload["created_at"] != changed_payload["created_at"]
+    assert "Using cached transcript." not in no_cache.stderr
+
+    replay = runner.invoke(app, [command, str(markdown_file), "--provider", "auto", "--json"])
+    assert replay.exit_code == 0, replay.stderr
+    assert json.loads(replay.stdout) == no_cache_payload
+    assert "Using cached transcript." in replay.stderr
 
 
 @pytest.mark.parametrize(
@@ -341,6 +457,11 @@ def test_direct_caption_files_preserve_timing_without_stt(
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["provider"] == "captions"
+    assert payload["origin"] == {
+        "kind": "captions",
+        "uri": caption_file.resolve().as_uri(),
+        "format": suffix[1:],
+    }
     assert payload["segments"][0]["start"] == expected_start
     assert payload["segments"][0]["text"] == expected_text
 
@@ -414,6 +535,12 @@ def test_media_sidecars_follow_vtt_srt_text_order(
     payload = json.loads(result.stdout)
     assert payload["text"] == expected_text
     assert payload["provider"] == expected_provider
+    selected_suffix = next(suffix for suffix in (".vtt", ".srt", ".txt") if suffix in sidecars)
+    assert payload["origin"] == {
+        "kind": "captions" if selected_suffix in {".vtt", ".srt"} else "text",
+        "uri": media_file.with_suffix(selected_suffix).resolve().as_uri(),
+        "format": selected_suffix[1:],
+    }
 
 
 def test_malformed_existing_sidecar_fails_without_falling_back_to_stt(
@@ -519,6 +646,52 @@ def test_no_cache_still_uses_direct_text_input(
     assert initial_payload["provider"] == refreshed_payload["provider"] == "text"
     assert refreshed_payload["text"] == "A direct text transcript."
     assert initial_payload["created_at"] != refreshed_payload["created_at"]
+
+
+def test_legacy_stt_cache_without_origin_is_reused_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    prepare_environment(monkeypatch, cache_dir)
+    resolved = LocalFileResolver().resolve(FIXTURE)
+    fingerprint = resolved.content_sha256
+    cache_id = cache_id_for(
+        resolved,
+        provider="fake",
+        model="fake-v1",
+        language=None,
+        source_fingerprint=fingerprint,
+    )
+    legacy_transcript = Transcript(
+        id=cache_id,
+        source=resolved.source_info,
+        provider="fake",
+        model="fake-v1",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        segments=[TranscriptSegment(text="Legacy cached transcript.")],
+    )
+    store = FileTranscriptStore(cache_dir)
+    store.put(
+        legacy_transcript,
+        "# Transcript\n\nLegacy cached transcript.\n",
+        resolved_source=resolved,
+        source_fingerprint=fingerprint,
+        requested_language=None,
+    )
+    transcript_path = store.transcript_path_for(cache_id)
+    legacy_payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+    legacy_payload.pop("origin")
+    transcript_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["ingest", str(FIXTURE), "--provider", "auto", "--json"])
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["id"] == cache_id
+    assert payload["origin"] is None
+    assert payload["text"] == "Legacy cached transcript."
+    assert "Using cached transcript." in result.stderr
 
 
 def test_corrupt_source_cache_reference_is_storage_error_not_stt_fallback(

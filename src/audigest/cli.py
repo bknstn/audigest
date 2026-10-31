@@ -9,7 +9,8 @@ from audigest.errors import (
     SourceResolutionError,
     StorageError,
 )
-from audigest.renderers import render_json
+from audigest.renderers import render_json, render_markdown
+from audigest.service import show_transcript
 from audigest.service import transcribe as transcribe_source
 
 app = typer.Typer(
@@ -40,7 +41,8 @@ def _ingest(
     source: str = typer.Argument(
         ...,
         help=(
-            "Local canonical JSON, UTF-8 text, SRT/VTT captions, or audio/video media path. "
+            "Local canonical JSON, UTF-8 text/Markdown, SRT/VTT captions, "
+            "or audio/video media path. "
             "Timing may be unavailable."
         ),
     ),
@@ -107,10 +109,35 @@ def _ingest(
     )
 
 
+def _show(
+    transcript_id: str = typer.Argument(..., help="ID printed by a successful ingest command."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Write only the canonical transcript JSON object to stdout.",
+    ),
+) -> None:
+    """Render a transcript already saved in the local cache."""
+    try:
+        transcript = show_transcript(transcript_id)
+    except _ERRORS as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=error.exit_code) from None
+
+    if json_output:
+        typer.echo(render_json(transcript))
+        return
+    typer.echo(render_markdown(transcript), nl=False)
+
+
 app.command(
     name="ingest",
     help="Obtain the best available local transcript; STT is used only as a fallback.",
 )(_ingest)
+app.command(
+    name="show",
+    help="Display a transcript already stored in the local cache.",
+)(_show)
 app.command(
     name="transcribe",
     help="Compatibility alias for 'ingest'; provider selection still applies only to STT fallback.",

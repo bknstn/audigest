@@ -48,8 +48,8 @@ class LocalFileResolver:
             raise SourceResolutionError("Source must be an existing regular media file")
         if media_path.suffix.lower() not in self.allowed_extensions:
             raise SourceResolutionError(
-                "Unsupported local source type. Use audio/video media, UTF-8 text, canonical JSON, "
-                "SRT, or VTT."
+                "Unsupported local source type. Use audio/video media, UTF-8 text/Markdown, "
+                "canonical JSON, SRT, or VTT."
             )
         if not os.access(media_path, os.R_OK):
             raise SourceResolutionError("Local media file is not readable")
