@@ -6,13 +6,19 @@ import os
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from audigest.acquisition import AcquisitionResult, LocalTranscriptAcquirer
 from audigest.config import load_config
-from audigest.errors import AudigestError, ProviderError, SourceResolutionError, StorageError
+from audigest.errors import (
+    AudigestError,
+    ProviderError,
+    SourceResolutionError,
+    StorageError,
+)
 from audigest.models import Transcript, TranscriptOrigin
 from audigest.renderers import render_markdown
 from audigest.sources.base import SUPPORTED_MEDIA_EXTENSIONS, ResolvedSource
@@ -20,9 +26,16 @@ from audigest.sources.detect import detect_source
 from audigest.sources.local import LocalFileResolver
 from audigest.sources.remote import (
     RemoteTranscriptInput,
+    fetch_remote_caption,
     fetch_remote_media,
     fetch_remote_transcript,
     remote_media_reference,
+)
+from audigest.sources.youtube import (
+    get_youtube_metadata,
+    select_audio_format,
+    select_caption_track,
+    youtube_reference,
 )
 from audigest.storage import FileTranscriptStore, cache_id_for
 from audigest.stt.router import get_provider
@@ -292,6 +305,21 @@ def _run_local_source(
         source_type = detect_source(source)
     except ValueError:
         raise SourceResolutionError("Source URL is malformed") from None
+    if source_type == "youtube":
+        if explicit_stt:
+            raise SourceResolutionError(
+                "The 'transcribe' command accepts local media only; use 'ingest' for YouTube."
+            )
+        return _run_youtube_source(
+            str(source),
+            transcript=transcript,
+            provider=provider,
+            language=language,
+            no_cache=no_cache,
+            keep_media=keep_media,
+            cache_dir=cache_dir,
+            config_file=config_file,
+        )
     acquisition: AcquisitionResult | None
     if source_type == "direct":
         if explicit_stt:
@@ -379,6 +407,128 @@ def _run_local_source(
         config_file=config_file,
         keep_media=keep_media,
     )
+
+
+def _run_youtube_source(
+    source: str,
+    *,
+    transcript: str | None,
+    provider: str | None,
+    language: str | None,
+    no_cache: bool,
+    keep_media: bool,
+    cache_dir: Path | str | None,
+    config_file: Path | str | None,
+) -> TranscriptionResult:
+    """Acquire YouTube captions first, then reuse STT cache before audio retrieval."""
+
+    reference = youtube_reference(source)
+    config = load_config(
+        provider=provider,
+        language=language,
+        cache_dir=cache_dir,
+        config_file=config_file,
+    )
+    if transcript is not None:
+        acquisition = _supplied_transcript(
+            reference.resolved_source,
+            transcript,
+            source_identity=reference.resolved_source.content_sha256,
+        )
+        return _run_resolved_source(
+            reference.resolved_source,
+            acquisition=acquisition,
+            source_fingerprint=acquisition.source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=no_cache,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+        )
+
+    metadata = get_youtube_metadata(reference)
+    source_info = metadata.source_info
+    resolved = replace(reference.resolved_source, source_info=source_info)
+    track = select_caption_track(metadata, config.language)
+    if track is not None:
+        origin_uri = f"{reference.url}#captions/{track.kind}/{quote(track.language, safe='')}"
+        track_identity = hashlib.sha256(
+            json.dumps(
+                ["youtube-caption-track-v1", reference.video_id, track.language, track.kind],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        remote_caption = fetch_remote_caption(
+            track.request_url,
+            suffix=track.suffix,
+            source_info=source_info,
+            origin_uri=origin_uri,
+            locator_fingerprint=track_identity,
+        )
+        acquisition = LocalTranscriptAcquirer().acquire_remote(remote_caption)
+        acquisition = AcquisitionResult(
+            draft=acquisition.draft.model_copy(
+                update={"language": track.language, "provider": "youtube-captions"}
+            ),
+            source_fingerprint=acquisition.source_fingerprint,
+            source_info=source_info,
+        )
+        return _run_resolved_source(
+            remote_caption.resolved_source,
+            acquisition=acquisition,
+            source_fingerprint=acquisition.source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=no_cache,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=False,
+        )
+
+    source_fingerprint = metadata.freshness_fingerprint
+    store = FileTranscriptStore(config.cache_dir)
+    if not no_cache:
+        cached_transcript = store.find_for_source(
+            resolved,
+            source_fingerprint,
+            requested_language=config.language,
+        )
+        if cached_transcript is not None:
+            return TranscriptionResult(
+                transcript=cached_transcript,
+                json_path=store.transcript_path_for(cached_transcript.id),
+                cached=True,
+                used_stt=False,
+            )
+
+    if config.provider == "auto":
+        raise ProviderError(
+            "No usable public YouTube captions were found and provider 'auto' is cache-only. "
+            "Choose --provider fake or --provider openai to download audio and run STT."
+        )
+    _ = get_provider(config.provider)
+    audio_format = select_audio_format(metadata, config.provider)
+    with fetch_remote_media(
+        audio_format.request_url,
+        suffix_override=audio_format.suffix,
+        source_info_override=source_info,
+        source_fingerprint_override=source_fingerprint,
+        locator_fingerprint_override=source_fingerprint,
+    ) as downloaded:
+        return _run_resolved_source(
+            downloaded.resolved_source,
+            acquisition=None,
+            source_fingerprint=source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=True,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+            temp_media_path=downloaded.resolved_source.media_path,
+        )
 
 
 def ingest(

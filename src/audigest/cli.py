@@ -108,8 +108,8 @@ def _ingest(
     source: str = typer.Argument(
         ...,
         help=(
-            "Local canonical JSON, UTF-8 text/Markdown, captions, or media path; direct HTTP(S) "
-            "transcript/caption or media URL. Timing may be unavailable."
+            "Local transcript, caption, text, or media path; direct HTTP(S) transcript/media URL; "
+            "or public single-video YouTube URL. Timing may be unavailable."
         ),
     ),
     provider: str | None = typer.Option(

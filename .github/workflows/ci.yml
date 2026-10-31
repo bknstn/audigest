@@ -19,7 +19,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Install locked dependencies
-        run: uv sync --frozen --all-groups --extra openai
+        run: uv sync --frozen --all-groups --extra openai --extra youtube
       - name: Run tests
         run: uv run pytest
       - name: Lint

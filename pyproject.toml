@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 openai = ["openai>=2,<3"]
+youtube = ["yt-dlp>=2025.11.12"]
 
 [project.scripts]
 audigest = "audigest.cli:app"

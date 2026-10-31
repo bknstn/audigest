@@ -77,7 +77,7 @@ def test_help_and_command_help_work() -> None:
     for option in ("--provider", "--language", "--json", "--no-cache", "--keep-media"):
         assert option in ingest_help.stdout
         assert option in transcribe_help.stdout
-    assert "canonical JSON" in ingest_help.stdout
+    assert "canonical transcript JSON object" in ingest_help.stdout
     assert "Timing may be" in ingest_help.stdout
     assert "unavailable." in ingest_help.stdout
     assert "STT fallback" in ingest_help.stdout

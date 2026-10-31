@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs) and 2b (direct media URLs and supplied transcripts) are implemented and review-accepted. Iteration 2b passed 205 offline tests. The North Star MVP is not complete: the current resume point is a small Iteration 2c for YouTube captions-first acquisition. Automatic publisher discovery, RSS, and Spotify metadata/enclosure support are separate later slices, followed by additional STT providers and canonical-transcript processors. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), and 2c (YouTube captions-first acquisition) are implemented and review-accepted. Iteration 2c passed 231 offline tests. The North Star MVP is not complete. The next execution priority is the remaining core MVP providers (ElevenLabs and local Whisper), followed by the canonical-only processors (summarize, apply, and english), then publisher/RSS/Spotify discovery. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -39,15 +39,11 @@ The local transcript vertical slice, including the explicit STT-only command, an
 
 ### Iteration 2c — YouTube captions-first acquisition
 
-- Use available YouTube captions before considering STT, with explicit, bounded acquisition behavior.
-- Keep caption parsing and provenance in the canonical transcript contract; do not add authentication bypass or live test dependencies.
-- Scope and acceptance tests will be selected as a separate small iteration before implementation.
-
-### Iteration 2d — Publisher, RSS, and Spotify metadata discovery
-
-- Add bounded publisher routes and discover existing publisher-provided transcripts/captions before STT.
-- RSS and Spotify support may resolve public metadata to publisher-hosted enclosures; never download or rip a Spotify stream.
-- Keep ambiguous, malformed, and inaccessible routes actionable without authentication bypass or live test dependencies.
+- `ingest` accepts public single-video watch, `youtu.be`, shorts, and embed URLs; explicit `--transcript` is handled first without YouTube metadata or media requests.
+- The optional `yt-dlp` subprocess reads bounded metadata without user config, cookies, plugins, updates, geo bypass, or remote components. Select manual/automatic VTT/SRT captions by requested language, original language, then stable available-language order before any STT lookup.
+- Caption cache identity includes stable video ID, selected track language/kind/format, and exact caption bytes. If no captions exist, matching STT cache is checked before direct audio-only download; STT cache freshness uses video ID and title/uploader/duration/upload-date metadata, not signed audio URL tokens. HLS/DASH manifests are excluded; temporary and `--keep-media` behavior follows the existing remote-media contract.
+- Reject private, age-restricted, live/upcoming, playlist-only, malformed, or unavailable inputs without authentication bypass. Caption parse/fetch errors do not fall back to STT. Offline tests use synthetic metadata, captions, and media only.
+- Implementation is accepted; offline suite: 231 tests passed. All required checks passed.
 
 ### Iteration 3 — ElevenLabs STT adapter
 
@@ -78,6 +74,12 @@ The local transcript vertical slice, including the explicit STT-only command, an
 - Add `english` for an already stored transcript ID with an explicit level such as B2.
 - Preserve available source context and timestamps; do not invent timing for untimed transcripts.
 - Test with synthetic transcript text and mocked model responses only.
+
+### Iteration 2d — Publisher, RSS, and Spotify metadata discovery
+
+- Add bounded publisher routes and discover existing publisher-provided transcripts/captions before STT.
+- RSS and Spotify support may resolve public metadata to publisher-hosted enclosures; never download or rip a Spotify stream.
+- Keep ambiguous, malformed, and inaccessible routes actionable without authentication bypass or live test dependencies.
 
 ### Iteration 8 — Offline acceptance and product documentation
 
