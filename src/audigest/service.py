@@ -506,8 +506,8 @@ def _run_youtube_source(
     if config.provider == "auto":
         raise ProviderError(
             "No usable public YouTube captions were found and provider 'auto' is cache-only. "
-            "Choose --provider fake, --provider openai, or --provider elevenlabs to download audio "
-            "and run STT."
+            "Choose --provider fake, --provider openai, --provider elevenlabs, or --provider local "
+            "to download audio and run STT."
         )
     _ = get_provider(config.provider)
     audio_format = select_audio_format(metadata, config.provider)

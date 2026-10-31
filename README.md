@@ -4,7 +4,7 @@ Audigest is designed to turn spoken media into reusable transcripts, then apply 
 
 Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt` and `.md`, `.srt`, and `.vtt` directly, including explicitly supplied HTTP(S) URLs ending in those formats. `ingest` also accepts direct HTTP(S) media URLs and public single-video YouTube watch, `youtu.be`, shorts, and embed URLs. Markdown is a direct input only. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. An explicit `--transcript` takes priority over those sidecars and YouTube metadata/caption lookup. It reuses a valid matching cached transcript before attempting STT. If a selected transcript is malformed, Audigest reports the problem and does not silently skip it to invoke STT.
 
-For `ingest`, provider selection applies only after no usable transcript, caption, text, or matching cache is available. `transcribe` is the separate explicit STT-only command for local media. The deterministic `fake` provider is an offline option for exercising STT; it does not recognize speech or describe audio. Explicitly selecting `openai` or `elevenlabs` enables that API for the ingest fallback or explicit transcribe path. `auto` never selects an STT provider, even when an API key is set. Local Whisper and other providers are not implemented.
+For `ingest`, provider selection applies only after no usable transcript, caption, text, or matching cache is available. `transcribe` is the separate explicit STT-only command for local media. The deterministic `fake` provider is an offline option for exercising STT; it does not recognize speech or describe audio. Explicitly selecting `openai` or `elevenlabs` enables that API for the ingest fallback or explicit transcribe path. Explicitly selecting `local` uses a prepared local faster-whisper model. `auto` never selects an STT provider, even when an API key or local model directory is available.
 
 ## Quick start
 
@@ -15,6 +15,7 @@ uv sync --all-groups
 uv run audigest --help
 uv run audigest ingest tests/fixtures/sample.wav --provider fake
 uv run audigest transcribe ./episode.mp3 --provider openai
+uv run --extra local audigest transcribe ./episode.mp3 --provider local
 uv run audigest ingest ./episode.mp3 --transcript ./notes.vtt
 uv run audigest ingest https://cdn.example/episode.mp3 --provider fake
 uv run audigest ingest 'https://www.youtube.com/watch?v=VIDEO_ID' --language en
@@ -121,7 +122,19 @@ The ElevenLabs adapter uses the [`scribe_v2` model](https://elevenlabs.io/docs/a
 
 The base installation remains usable without the optional ElevenLabs SDK. Install the `elevenlabs` extra only when you want to select this provider.
 
-The `fake` provider can exercise the local fallback path, but does not recognize speech or describe audio. Local Whisper and transcript processors are future work. For example, the following processor commands are not available yet:
+To use local faster-whisper, install the optional `local` extra and point `AUDIGEST_WHISPER_MODEL_DIR` to an already prepared CTranslate2 model directory:
+
+```bash
+uv sync --all-groups --extra local
+export AUDIGEST_WHISPER_MODEL_DIR="$PWD/models/faster-whisper-small"
+uv run --extra local audigest transcribe ./episode.mp3 --provider local --language en
+```
+
+The directory must contain `model.bin`, `config.json`, and `tokenizer.json`; including the model's `preprocessor_config.json` is also recommended. Prepare or obtain the CTranslate2 model separately using the [faster-whisper model instructions](https://github.com/SYSTRAN/faster-whisper#model-conversion). Audigest accepts only a local directory, sets `local_files_only=True`, and runs on CPU with int8 computation. It does not download model weights or tokenizer files. This provider reads no API key. It preserves faster-whisper's segment timestamps and detected language, when available; it does not request word timestamps or enable VAD.
+
+The base installation remains usable without the optional faster-whisper SDK. Install the `local` extra only when you want to select this provider. Missing SDK or prepared model files are reported as a local dependency issue.
+
+The `fake` provider can exercise the local fallback path, but does not recognize speech or describe audio. Transcript processors are future work. For example, the following processor commands are not available yet:
 
 ```bash
 audigest summarize <transcript-id>
@@ -139,6 +152,7 @@ Configuration precedence is CLI flags, environment variables, optional TOML conf
 | `AUDIGEST_CONFIG_FILE` | Override the TOML config file path. |
 | `OPENAI_API_KEY` | Optional OpenAI API credential, used only when the OpenAI provider is selected and a cache miss requires STT. |
 | `ELEVENLABS_API_KEY` | Optional ElevenLabs API credential, used only when the ElevenLabs provider is selected and a cache miss requires STT. |
+| `AUDIGEST_WHISPER_MODEL_DIR` | Local CTranslate2 model directory, used only by an explicitly selected `local` provider after a cache miss. |
 
 Credentials are never accepted in TOML or stored in transcript/cache files. Keep provider API keys in the environment.
 
@@ -179,4 +193,4 @@ Tests and CI are deterministic and do not call paid APIs or require credentials.
 
 ## Roadmap
 
-The planned product will normalize media from supported sources into one provider-independent transcript format. Direct public YouTube caption acquisition is available; automatic publisher discovery, feeds, Spotify metadata routes, additional STT providers, and transcript processors such as summaries, project application, and English-learning extraction are future work. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.
+The planned product will normalize media from supported sources into one provider-independent transcript format. Direct public YouTube caption acquisition and the required STT providers are available; automatic publisher discovery, feeds, Spotify metadata routes, and transcript processors such as summaries, project application, and English-learning extraction are future work. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.

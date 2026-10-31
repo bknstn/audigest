@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), and 3 (ElevenLabs STT) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255. The North Star MVP is not complete. The next execution priority is local Whisper, followed by canonical-only processors (summarize, apply, and english), then publisher/RSS/Spotify discovery. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), 3 (ElevenLabs STT), and 4 (local Whisper) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255; iteration 4 passed 271, with Ruff, formatting, and mypy checks passing. The North Star MVP is not complete. The current resume point is Iteration 5, the canonical-only summary processor; apply and english remain separate later iterations, followed by publisher/RSS/Spotify discovery. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -54,9 +54,10 @@ The local transcript vertical slice, including the explicit STT-only command, an
 
 ### Iteration 4 — Local Whisper STT adapter
 
-- Add an opt-in local Whisper/faster-whisper adapter behind the provider boundary, with clear local dependency and model requirements.
-- Keep model downloads or other setup explicit; do not introduce hidden network calls during normal ingestion.
-- Test routing and normalization offline, with optional dependency behavior covered without requiring model downloads in CI.
+- Add an opt-in `local` provider backed by the optional faster-whisper SDK. It accepts only `AUDIGEST_WHISPER_MODEL_DIR`, an existing local CTranslate2 model directory containing `model.bin`, `config.json`, and `tokenizer.json`.
+- Instantiate faster-whisper with `local_files_only=True`, `device="cpu"`, and `compute_type="int8"`; Audigest does not download model/tokenizer files. Require an explicit provider selection and load the optional SDK only after a cache miss.
+- Preserve actual segment timestamps and detected language; reject empty, malformed, or invalidly timed output as a sanitized provider error. Persist only the model directory basename plus backend, not the full local path.
+- Offline tests inject a synthetic SDK/model boundary and do not download weights or call a live service. All 271 offline tests pass; Ruff, formatting, and mypy checks pass. Implementation is accepted.
 
 ### Iteration 5 — Canonical-only summary processor
 

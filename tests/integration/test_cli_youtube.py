@@ -303,6 +303,7 @@ def test_youtube_audio_selection_filters_formats_unsupported_by_elevenlabs() -> 
     only_unsupported = make_metadata(formats=[unsupported])
     with pytest.raises(RetrievalError, match="supported direct audio-only format"):
         select_audio_format(only_unsupported, "elevenlabs")
+    assert select_audio_format(only_unsupported, "local").suffix == ".caf"
 
 
 def test_ytdlp_command_disables_user_configuration_and_manifest_routes() -> None:
