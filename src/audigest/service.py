@@ -9,6 +9,7 @@ from audigest.config import load_config
 from audigest.errors import AudigestError, ProviderError, SourceResolutionError
 from audigest.models import Transcript, TranscriptOrigin
 from audigest.renderers import render_markdown
+from audigest.sources.base import SUPPORTED_MEDIA_EXTENSIONS
 from audigest.sources.detect import detect_source
 from audigest.sources.local import LocalFileResolver
 from audigest.storage import FileTranscriptStore, cache_id_for
@@ -25,9 +26,10 @@ class TranscriptionResult:
     used_stt: bool
 
 
-def transcribe(
+def _run_local_source(
     source: str | Path,
     *,
+    explicit_stt: bool,
     provider: str | None = None,
     language: str | None = None,
     no_cache: bool = False,
@@ -35,13 +37,13 @@ def transcribe(
     cache_dir: Path | str | None = None,
     config_file: Path | str | None = None,
 ) -> TranscriptionResult:
-    """Acquire existing transcript data before falling back to STT.
+    """Run either transcript-first ingestion or explicit media-only STT.
 
-    Direct transcript, text, and caption inputs and recognized sidecars are
-    prepared before cache lookup so their effective content fingerprint
-    participates in cache identity. ``no_cache`` skips the cache pointer read
-    but still honors those local inputs and persists the result. Local files
-    are read in place; ``keep_media`` has no effect for local sources.
+    In transcript-first mode, direct inputs and prioritized sidecars are
+    prepared before cache lookup. Explicit STT skips all acquisition and uses
+    only the local media fingerprint, allowing it to reuse prior STT work
+    without consuming transcript/caption cache entries. ``no_cache`` skips
+    lookup and still stores the newly produced transcript.
     """
     del keep_media  # Local originals are never copied, removed, or retained elsewhere.
     try:
@@ -54,7 +56,13 @@ def transcribe(
         )
 
     resolved = LocalFileResolver().resolve(source)
-    acquisition = LocalTranscriptAcquirer().acquire(resolved)
+    if explicit_stt and resolved.media_path.suffix.lower() not in SUPPORTED_MEDIA_EXTENSIONS:
+        raise SourceResolutionError(
+            "The 'transcribe' command accepts supported local audio/video media only; "
+            "use 'ingest' for transcript, text, or caption files."
+        )
+
+    acquisition = None if explicit_stt else LocalTranscriptAcquirer().acquire(resolved)
     source_fingerprint = (
         resolved.content_sha256 if acquisition is None else acquisition.source_fingerprint
     )
@@ -147,6 +155,54 @@ def transcribe(
         json_path=json_path,
         cached=False,
         used_stt=used_stt,
+    )
+
+
+def ingest(
+    source: str | Path,
+    *,
+    provider: str | None = None,
+    language: str | None = None,
+    no_cache: bool = False,
+    keep_media: bool = False,
+    cache_dir: Path | str | None = None,
+    config_file: Path | str | None = None,
+) -> TranscriptionResult:
+    """Obtain the best available transcript before considering STT fallback."""
+
+    return _run_local_source(
+        source,
+        explicit_stt=False,
+        provider=provider,
+        language=language,
+        no_cache=no_cache,
+        keep_media=keep_media,
+        cache_dir=cache_dir,
+        config_file=config_file,
+    )
+
+
+def transcribe(
+    source: str | Path,
+    *,
+    provider: str | None = None,
+    language: str | None = None,
+    no_cache: bool = False,
+    keep_media: bool = False,
+    cache_dir: Path | str | None = None,
+    config_file: Path | str | None = None,
+) -> TranscriptionResult:
+    """Run explicit STT on a local media file without transcript acquisition."""
+
+    return _run_local_source(
+        source,
+        explicit_stt=True,
+        provider=provider,
+        language=language,
+        no_cache=no_cache,
+        keep_media=keep_media,
+        cache_dir=cache_dir,
+        config_file=config_file,
     )
 
 

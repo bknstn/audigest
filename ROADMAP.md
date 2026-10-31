@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice is implemented and review-accepted. The North Star MVP is not complete: remote transcript acquisition, the explicit STT-only command, additional STT providers, and canonical-transcript processors remain to be built. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, is implemented and review-accepted. The North Star MVP is not complete: remote transcript acquisition, additional STT providers, and canonical-transcript processors remain to be built. The next resume point is Iteration 2, remote source acquisition. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -13,14 +13,14 @@ The local transcript vertical slice is implemented and review-accepted. The Nort
 - Saved transcripts can be read by ID with `show`, as Markdown or canonical JSON, without accessing the original source or changing the cache.
 - Offline suite: 167 tests passed at checkpoint.
 
-## Remaining MVP iterations
-
 ### Iteration 1 — Separate strategy-first ingest from explicit STT
 
-- Keep `ingest` strategy-first: use supplied transcript, publisher transcript, or captions before any STT fallback.
-- Make `transcribe` an explicit STT-only path for local media; it must not acquire or prefer supplied/adjacent transcript text.
-- Keep explicit STT cache reuse separate from acquired transcript/caption cache results, while reusing valid prior STT work. Avoid duplicating paid or expensive work when a matching STT result already exists.
-- Document both commands and test that each path honors its own contract without network calls.
+- `ingest` remains strategy-first. `transcribe` is now explicit STT-only for supported local media and never inspects direct transcript inputs or adjacent sidecars.
+- Both commands look up STT results by the raw media fingerprint. Acquired transcript/caption entries use their existing effective fingerprints, so they cannot satisfy explicit `transcribe`; matching STT work remains reusable by either command.
+- `auto` remains cache-only. `--no-cache` reruns STT for `transcribe`, while `ingest` still honors acquired inputs before its STT fallback.
+- Offline suite: 164 tests passed. Implementation is accepted; iteration 2 is the next resume point and has not started.
+
+## Remaining MVP iterations
 
 ### Iteration 2 — Remote sources and existing transcript acquisition
 

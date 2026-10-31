@@ -20,13 +20,12 @@ def get_provider(name: str) -> TranscriptionProvider:
     if name == "auto":
         raise ProviderError(
             "Provider 'auto' reuses matching cached transcripts but does not select an STT "
-            "provider. Choose --provider fake or --provider openai to enable fallback explicitly."
+            "provider. Choose --provider fake or --provider openai to run STT."
         )
     if name in _KNOWN_PROVIDERS:
         raise ProviderError(
             f"The '{name}' STT provider is not implemented in this version. Select --provider "
-            "fake for the deterministic offline provider or --provider openai for explicit "
-            "OpenAI fallback."
+            "fake for deterministic offline STT or --provider openai for OpenAI STT."
         )
     raise ConfigurationError(
         "Unknown STT provider. Choose one of: auto, fake, openai, elevenlabs, local"

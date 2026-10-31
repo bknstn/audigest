@@ -4,7 +4,7 @@ Audigest is designed to turn spoken media into reusable transcripts, then apply 
 
 Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt` and `.md`, `.srt`, and `.vtt` directly. Markdown is a direct input only. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. For example, `episode.mp3` checks `episode.transcript.json`, `episode.vtt`, `episode.srt`, and `episode.txt`. It reuses a valid matching cached transcript before attempting STT. If an existing candidate is malformed, Audigest reports the problem and does not silently skip it to invoke STT.
 
-Only if no usable transcript, caption, text, or matching cache is available does provider selection apply. The deterministic `fake` provider is an explicit fallback for exercising the pipeline; it does not recognize speech or describe audio. Explicitly selecting `openai` enables one real STT fallback through the OpenAI API. `auto` remains cache-only and never selects a network provider, even when `OPENAI_API_KEY` is set. Other providers are not implemented.
+For `ingest`, provider selection applies only after no usable transcript, caption, text, or matching cache is available. `transcribe` is the separate explicit STT-only command for local media. The deterministic `fake` provider is an offline option for exercising STT; it does not recognize speech or describe audio. Explicitly selecting `openai` enables the OpenAI API for the ingest fallback or explicit transcribe path. `auto` remains cache-only and never selects a network provider, even when `OPENAI_API_KEY` is set. Other providers are not implemented.
 
 ## Quick start
 
@@ -14,6 +14,7 @@ Requires Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
 uv sync --all-groups
 uv run audigest --help
 uv run audigest ingest tests/fixtures/sample.wav --provider fake
+uv run audigest transcribe ./episode.mp3 --provider openai
 ```
 
 The fixture is a one-second, generated 440 Hz tone, not speech. Its deterministic output is only a smoke-test transcript; it does not represent the sound in the file.
@@ -26,6 +27,12 @@ uv run audigest ingest ./episode.txt
 uv run audigest ingest ./episode.md
 uv run audigest ingest ./episode.vtt
 uv run audigest ingest ./episode.srt
+```
+
+For explicit STT on local media, use `transcribe` with a selected provider:
+
+```bash
+uv run audigest transcribe ./episode.mp3 --provider openai --language en
 ```
 
 Every successful ingest prints the saved transcript ID. Use it to read the stored transcript later, even if the original source has moved or been removed:
@@ -49,7 +56,7 @@ uv run audigest ingest tests/fixtures/sample.wav --provider fake --json
 
 In human mode, progress goes to stderr and the final result goes to stdout. In JSON mode, stdout contains JSON only; diagnostics go to stderr.
 
-`--no-cache` skips cache-pointer lookup, but still reads direct or adjacent transcript/text/caption inputs; the newly acquired result is still stored. Audigest keeps one latest pointer per source URI, effective content fingerprint (including selected sidecar contents), and requested language. A changed media file or sidecar cannot reuse a stale entry. Provider selection does not constrain a valid cache hit because it applies only to STT fallback. The default cache root is the operating system's user cache location for Audigest; `AUDIGEST_CACHE_DIR` overrides that root. The cache uses this layout:
+For `ingest`, `--no-cache` skips cache-pointer lookup but still reads direct or adjacent transcript/text/caption inputs; the acquired result is still stored. For `transcribe`, `--no-cache` skips matching STT cache lookup and runs the selected STT provider again. Both commands use a raw media fingerprint for STT, while `ingest` transcript/caption acquisitions use a separate effective fingerprint that includes the selected sidecar. As a result, `ingest` can reuse a prior STT fallback when no transcript source exists, but a transcript/caption cache cannot satisfy explicit `transcribe`. Changed media or sidecars cannot reuse stale entries. A valid matching STT cache may be reused regardless of the selected fallback provider. The default cache root is the operating system's user cache location for Audigest; `AUDIGEST_CACHE_DIR` overrides that root. The cache uses this layout:
 
 ```text
 <audigest-user-cache>/
@@ -68,7 +75,9 @@ Local original media is read in place and is never copied or removed. `--keep-me
 
 ## Command status
 
-`transcribe` remains a compatibility alias for `ingest`. Both commands use the same transcript-first acquisition, cache, and STT fallback behavior and accept the same options. In particular, `--provider` selects the STT fallback; it does not force transcription when a transcript or caption is available. A separate explicit STT-only command remains future work.
+`ingest` is transcript-first: it reads direct transcript/text/caption inputs, then prioritized adjacent sidecars, then checks the matching cache before STT fallback. Use it when you want Audigest to choose the best available transcript.
+
+`transcribe` is an explicit STT-only command for supported local audio/video media. It ignores all transcript sidecars, even malformed ones, and rejects direct JSON, text, Markdown, SRT, and VTT files with a suggestion to use `ingest`. It checks the matching raw-media STT cache before calling the selected provider. Both commands share prior STT work, but acquired transcript/caption cache entries cannot satisfy `transcribe`. This intentionally replaces the previous compatibility-alias behavior; use `ingest` for transcript-first behavior.
 
 `show` accepts a saved transcript ID and the optional `--json` output flag. It renders the stored canonical transcript without using the source file or selecting an STT provider. It does not accept file paths or cache references.
 
@@ -80,7 +89,7 @@ export OPENAI_API_KEY="..."
 uv run --extra openai audigest ingest ./episode.mp3 --provider openai --language en
 ```
 
-The OpenAI fallback uses the [`gpt-transcribe` model](https://developers.openai.com/api/docs/guides/speech-to-text) and sends audio only after local transcript/caption acquisition and cache lookup have been exhausted. It reads only `OPENAI_API_KEY`, sends requests to the fixed official OpenAI API endpoint, has a 60-second timeout with retries disabled, and never saves the key. This uses the OpenAI API and its account billing; a ChatGPT or Codex subscription is not used or required.
+The OpenAI provider uses the [`gpt-transcribe` model](https://developers.openai.com/api/docs/guides/speech-to-text). `ingest` sends audio only after local transcript/caption acquisition and cache lookup; `transcribe` sends audio after its matching STT cache lookup. It reads only `OPENAI_API_KEY`, sends requests to the fixed official OpenAI API endpoint, has a 60-second timeout with retries disabled, and never saves the key. This uses the OpenAI API and its account billing; a ChatGPT or Codex subscription is not used or required.
 
 OpenAI accepts `.flac`, `.m4a`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.ogg`, `.wav`, and `.webm` files up to 25 MB. Other local media formats are rejected before upload. Audigest does not convert or split files. It stores the JSON response text as one untimed canonical segment and does not request or infer timestamps. Audigest preserves a single detected language when available and otherwise retains the supplied language hint, if any.
 
@@ -98,11 +107,11 @@ Configuration precedence is CLI flags, environment variables, optional TOML conf
 
 | Variable | Purpose |
 | --- | --- |
-| `AUDIGEST_STT_PROVIDER` | STT fallback provider; defaults to `auto`, which is cache-only and errors on a cache miss. Select `fake` or `openai` explicitly to enable STT fallback. |
+| `AUDIGEST_STT_PROVIDER` | Provider for STT; defaults to `auto`, which is cache-only and errors on a cache miss. `ingest` uses it only as fallback; `transcribe` uses it for explicit STT. |
 | `AUDIGEST_LANGUAGE` | Optional transcription language. |
 | `AUDIGEST_CACHE_DIR` | Override the local cache root. |
 | `AUDIGEST_CONFIG_FILE` | Override the TOML config file path. |
-| `OPENAI_API_KEY` | Optional OpenAI API credential, used only when `--provider openai` reaches the STT fallback. |
+| `OPENAI_API_KEY` | Optional OpenAI API credential, used only when the OpenAI provider is selected and a cache miss requires STT. |
 
 Credentials are never accepted in TOML or stored in transcript/cache files. Keep `OPENAI_API_KEY` in the environment; other provider credentials remain future work.
 

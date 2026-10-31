@@ -20,10 +20,10 @@ from audigest.stt.router import get_provider
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "sample.wav"
 
 
-@pytest.fixture(params=("ingest", "transcribe"))
-def command(request: pytest.FixtureRequest) -> str:
-    """Exercise the primary command and its compatibility alias."""
-    return str(request.param)
+@pytest.fixture
+def command() -> str:
+    """Default transcript-first command; media tests override to exercise both paths."""
+    return "ingest"
 
 
 def prepare_environment(monkeypatch: pytest.MonkeyPatch, cache_dir: Path) -> None:
@@ -72,7 +72,6 @@ def test_help_and_command_help_work() -> None:
     assert "ingest" in root_help.stdout
     assert "show" in root_help.stdout
     assert "transcribe" in root_help.stdout
-    assert "compatibility alias" in root_help.stdout
     assert ingest_help.exit_code == 0
     assert transcribe_help.exit_code == 0
     for option in ("--provider", "--language", "--json", "--no-cache", "--keep-media"):
@@ -81,7 +80,9 @@ def test_help_and_command_help_work() -> None:
     assert "canonical JSON" in ingest_help.stdout
     assert "Timing may be" in ingest_help.stdout
     assert "unavailable." in ingest_help.stdout
-    assert "Compatibility alias" in transcribe_help.stdout
+    assert "STT fallback" in ingest_help.stdout
+    assert "Explicitly run STT" in transcribe_help.stdout
+    assert "sidecars are ignored" in transcribe_help.stdout
 
 
 @pytest.mark.parametrize(
@@ -198,7 +199,9 @@ def test_openai_cli_fallback_persists_and_replays_without_key(
     assert calls == 1
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_auto_does_not_use_openai_key_implicitly(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -213,7 +216,7 @@ def test_auto_does_not_use_openai_key_implicitly(
 
     result = CliRunner().invoke(
         app,
-        ["ingest", str(FIXTURE), "--provider", "auto", "--json"],
+        [command, str(FIXTURE), "--provider", "auto", "--json"],
     )
 
     assert result.exit_code == 5
@@ -222,6 +225,7 @@ def test_auto_does_not_use_openai_key_implicitly(
     assert synthetic_key not in result.stderr
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_json_mode_is_pure_and_persists_all_three_artifacts(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -242,7 +246,7 @@ def test_json_mode_is_pure_and_persists_all_three_artifacts(
     assert payload["schema_version"] == "1"
     assert payload["source"]["type"] == "local"
     assert payload["provider"] == "fake"
-    assert "Resolving source" in result.stderr
+    assert "Resolving local source" in result.stderr
     assert "Transcript ID" not in result.stdout
     item_dir = cache_dir / "items" / transcript_id
     assert (item_dir / "source.json").is_file()
@@ -250,6 +254,7 @@ def test_json_mode_is_pure_and_persists_all_three_artifacts(
     assert (item_dir / "transcript.md").is_file()
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_human_mode_sends_progress_to_stderr_and_result_paths_to_stdout(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -570,6 +575,129 @@ def test_malformed_existing_sidecar_fails_without_falling_back_to_stt(
     assert not (cache_dir / "items").exists()
 
 
+def test_explicit_transcribe_ignores_malformed_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    media_file = tmp_path / "episode.wav"
+    shutil.copyfile(FIXTURE, media_file)
+    media_file.with_suffix(".transcript.json").write_text("{ malformed", encoding="utf-8")
+    fake = get_provider("fake")
+    provider_calls = 0
+
+    class SpyProvider:
+        name = fake.name
+        model = fake.model
+
+        def transcribe(self, media_path: Path, *, language: str | None = None) -> Any:
+            nonlocal provider_calls
+            provider_calls += 1
+            return fake.transcribe(media_path, language=language)
+
+    def unexpected_acquisition(*_: object, **__: object) -> None:
+        pytest.fail("explicit transcribe must not inspect transcript sidecars")
+
+    monkeypatch.setattr("audigest.service.LocalTranscriptAcquirer.acquire", unexpected_acquisition)
+    monkeypatch.setattr("audigest.service.get_provider", lambda _name: SpyProvider())
+    runner = CliRunner()
+    result = runner.invoke(app, ["transcribe", str(media_file), "--provider", "fake", "--json"])
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["provider"] == "fake"
+    assert payload["origin"]["kind"] == "stt"
+    assert payload["text"]
+    refreshed = runner.invoke(
+        app, ["transcribe", str(media_file), "--provider", "fake", "--json", "--no-cache"]
+    )
+    assert refreshed.exit_code == 0, refreshed.stderr
+    assert json.loads(refreshed.stdout)["id"] == payload["id"]
+    assert json.loads(refreshed.stdout)["created_at"] != payload["created_at"]
+    assert provider_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("suffix", "sidecar_text", "expected_provider", "expected_text"),
+    [
+        (".txt", "Synthetic adjacent text.", "text", "Synthetic adjacent text."),
+        (
+            ".vtt",
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nSynthetic caption.\n",
+            "captions",
+            "Synthetic caption.",
+        ),
+    ],
+)
+def test_ingest_uses_sidecar_while_transcribe_keeps_stt_cache_separate(
+    suffix: str,
+    sidecar_text: str,
+    expected_provider: str,
+    expected_text: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    media_file = tmp_path / "episode.wav"
+    shutil.copyfile(FIXTURE, media_file)
+    sidecar = media_file.with_suffix(suffix)
+    runner = CliRunner()
+
+    sidecar.write_text(sidecar_text, encoding="utf-8")
+    acquired = runner.invoke(app, ["ingest", str(media_file), "--provider", "auto", "--json"])
+    assert acquired.exit_code == 0, acquired.stderr
+    acquired_payload = json.loads(acquired.stdout)
+    assert acquired_payload["provider"] == expected_provider
+    assert acquired_payload["text"] == expected_text
+
+    stt_cache_miss = runner.invoke(
+        app, ["transcribe", str(media_file), "--provider", "auto", "--json"]
+    )
+    assert stt_cache_miss.exit_code == 5
+    assert stt_cache_miss.stdout == ""
+    assert "does not select an STT provider" in stt_cache_miss.stderr
+
+    transcribed = runner.invoke(
+        app, ["transcribe", str(media_file), "--provider", "fake", "--json"]
+    )
+    assert transcribed.exit_code == 0, transcribed.stderr
+    transcribed_payload = json.loads(transcribed.stdout)
+    assert transcribed_payload["provider"] == "fake"
+    assert transcribed_payload["origin"]["kind"] == "stt"
+    assert transcribed_payload["id"] != acquired_payload["id"]
+
+    acquired_again = runner.invoke(app, ["ingest", str(media_file), "--provider", "auto", "--json"])
+    transcribed_again = runner.invoke(
+        app, ["transcribe", str(media_file), "--provider", "auto", "--json"]
+    )
+    assert acquired_again.exit_code == transcribed_again.exit_code == 0
+    assert json.loads(acquired_again.stdout) == acquired_payload
+    assert json.loads(transcribed_again.stdout) == transcribed_payload
+
+
+@pytest.mark.parametrize("suffix", [".json", ".txt", ".md", ".srt", ".vtt"])
+def test_transcribe_rejects_transcript_and_caption_inputs_before_provider(
+    suffix: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    direct_input = tmp_path / f"input{suffix}"
+    direct_input.write_text("synthetic input", encoding="utf-8")
+
+    def unexpected_provider(*_: object, **__: object) -> None:
+        pytest.fail("non-media input must be rejected before provider selection")
+
+    monkeypatch.setattr("audigest.service.get_provider", unexpected_provider)
+    result = CliRunner().invoke(
+        app, ["transcribe", str(direct_input), "--provider", "fake", "--json"]
+    )
+
+    assert result.exit_code == 3
+    assert result.stdout == ""
+    assert "use 'ingest'" in result.stderr
+
+
 def test_changed_adjacent_sidecar_invalidates_same_media_cache(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -594,7 +722,6 @@ def test_changed_adjacent_sidecar_invalidates_same_media_cache(
 
 
 def test_new_sidecar_takes_precedence_over_prior_fake_cache(
-    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -604,17 +731,13 @@ def test_new_sidecar_takes_precedence_over_prior_fake_cache(
     runner = CliRunner()
 
     transcribed = runner.invoke(
-        app,
-        [command, str(media_file), "--provider", "fake", "--json"],
+        app, ["transcribe", str(media_file), "--provider", "fake", "--json"]
     )
     media_file.with_suffix(".txt").write_text(
         "New sidecar transcript wins over older STT cache.",
         encoding="utf-8",
     )
-    acquired = runner.invoke(
-        app,
-        [command, str(media_file), "--provider", "auto", "--json"],
-    )
+    acquired = runner.invoke(app, ["ingest", str(media_file), "--provider", "auto", "--json"])
 
     assert transcribed.exit_code == acquired.exit_code == 0
     prior_payload = json.loads(transcribed.stdout)
@@ -624,6 +747,12 @@ def test_new_sidecar_takes_precedence_over_prior_fake_cache(
     assert acquired_payload["text"] == "New sidecar transcript wins over older STT cache."
     assert acquired_payload["id"] != prior_payload["id"]
     assert "Using existing local transcript" in acquired.stderr
+
+    transcribed_again = runner.invoke(
+        app, ["transcribe", str(media_file), "--provider", "auto", "--json"]
+    )
+    assert transcribed_again.exit_code == 0, transcribed_again.stderr
+    assert json.loads(transcribed_again.stdout) == prior_payload
 
 
 def test_no_cache_still_uses_direct_text_input(
@@ -648,7 +777,9 @@ def test_no_cache_still_uses_direct_text_input(
     assert initial_payload["created_at"] != refreshed_payload["created_at"]
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_legacy_stt_cache_without_origin_is_reused_unchanged(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -684,7 +815,7 @@ def test_legacy_stt_cache_without_origin_is_reused_unchanged(
     legacy_payload.pop("origin")
     transcript_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
 
-    result = CliRunner().invoke(app, ["ingest", str(FIXTURE), "--provider", "auto", "--json"])
+    result = CliRunner().invoke(app, [command, str(FIXTURE), "--provider", "auto", "--json"])
 
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -694,6 +825,7 @@ def test_legacy_stt_cache_without_origin_is_reused_unchanged(
     assert "Using cached transcript." in result.stderr
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_corrupt_source_cache_reference_is_storage_error_not_stt_fallback(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -716,6 +848,7 @@ def test_corrupt_source_cache_reference_is_storage_error_not_stt_fallback(
     assert "traceback" not in broken.stderr.lower()
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_cache_hit_skips_provider_invocation(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -750,6 +883,7 @@ def test_cache_hit_skips_provider_invocation(
     assert "Using cached transcript." in second.stderr
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_no_cache_skips_reads_but_writes_a_fresh_transcript(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -783,6 +917,46 @@ def test_no_cache_skips_reads_but_writes_a_fresh_transcript(
     assert json.loads(cached.stdout)["created_at"] == json.loads(fresh.stdout)["created_at"]
 
 
+def test_transcribe_cache_isolated_by_requested_language(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    provider = get_provider("fake")
+    calls = 0
+
+    class SpyProvider:
+        name = provider.name
+        model = provider.model
+
+        def transcribe(self, media_path: Path, *, language: str | None = None) -> Any:
+            nonlocal calls
+            calls += 1
+            return provider.transcribe(media_path, language=language)
+
+    monkeypatch.setattr("audigest.service.get_provider", lambda _name: SpyProvider())
+    runner = CliRunner()
+    english = runner.invoke(
+        app, ["transcribe", str(FIXTURE), "--provider", "fake", "--language", "en", "--json"]
+    )
+    polish = runner.invoke(
+        app, ["transcribe", str(FIXTURE), "--provider", "fake", "--language", "pl", "--json"]
+    )
+    english_replay = runner.invoke(
+        app, ["transcribe", str(FIXTURE), "--provider", "auto", "--language", "en", "--json"]
+    )
+
+    assert english.exit_code == polish.exit_code == english_replay.exit_code == 0
+    english_payload = json.loads(english.stdout)
+    polish_payload = json.loads(polish.stdout)
+    assert english_payload["language"] == "en"
+    assert polish_payload["language"] == "pl"
+    assert english_payload["id"] != polish_payload["id"]
+    assert json.loads(english_replay.stdout) == english_payload
+    assert calls == 2
+
+
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_content_mutation_invalidates_cache_for_same_path(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -802,6 +976,7 @@ def test_content_mutation_invalidates_cache_for_same_path(
     assert json.loads(original.stdout)["id"] != json.loads(changed.stdout)["id"]
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_invalid_arguments_exit_two_with_no_stdout(command: str) -> None:
     result = CliRunner().invoke(app, [command, "--unknown-option"])
 
@@ -820,6 +995,7 @@ def test_invalid_arguments_exit_two_with_no_stdout(command: str) -> None:
         (str(FIXTURE), "openai", 5, "OPENAI_API_KEY"),
     ],
 )
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_source_and_provider_failures_are_actionable_and_clean(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -839,6 +1015,7 @@ def test_source_and_provider_failures_are_actionable_and_clean(
     assert "traceback" not in result.stderr.lower()
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_missing_and_broken_explicit_config_are_clean_errors(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -870,6 +1047,7 @@ def test_missing_and_broken_explicit_config_are_clean_errors(
     assert "traceback" not in broken_result.stderr.lower()
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_invalid_cached_json_is_a_clean_storage_failure(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -891,6 +1069,7 @@ def test_invalid_cached_json_is_a_clean_storage_failure(
     assert "traceback" not in broken.stderr.lower()
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_provider_failure_is_sanitized_and_preserves_local_source(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -925,6 +1104,7 @@ def test_provider_failure_is_sanitized_and_preserves_local_source(
     assert not (cache_dir / "items").exists()
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_missing_dependency_error_keeps_exit_seven_without_partial_artifacts(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -961,6 +1141,7 @@ def test_missing_dependency_error_keeps_exit_seven_without_partial_artifacts(
     assert not (cache_dir / "items").exists()
 
 
+@pytest.mark.parametrize("command", ["ingest", "transcribe"])
 def test_keep_media_never_changes_or_copies_a_local_original(
     command: str,
     monkeypatch: pytest.MonkeyPatch,
