@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 openai = ["openai>=2,<3"]
 youtube = ["yt-dlp>=2025.11.12"]
+elevenlabs = ["elevenlabs>=2.75.0,<3"]
 
 [project.scripts]
 audigest = "audigest.cli:app"

@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), and 2c (YouTube captions-first acquisition) are implemented and review-accepted. Iteration 2c passed 231 offline tests. The North Star MVP is not complete. The next execution priority is the remaining core MVP providers (ElevenLabs and local Whisper), followed by the canonical-only processors (summarize, apply, and english), then publisher/RSS/Spotify discovery. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), and 3 (ElevenLabs STT) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255. The North Star MVP is not complete. The next execution priority is local Whisper, followed by canonical-only processors (summarize, apply, and english), then publisher/RSS/Spotify discovery. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -47,9 +47,10 @@ The local transcript vertical slice, including the explicit STT-only command, an
 
 ### Iteration 3 — ElevenLabs STT adapter
 
-- Add an explicit provider adapter that normalizes provider responses into the canonical transcript draft.
-- Read credentials only from documented environment variables; keep them out of diagnostics and stored artifacts.
-- Test request/response normalization, errors, and cache behavior with mocks; do not call paid endpoints in CI.
+- Add the optional `elevenlabs` SDK extra and explicit provider adapter for `scribe_v2`; `ingest` and `transcribe` continue to share the canonical provider protocol.
+- Read only `ELEVENLABS_API_KEY`; use the fixed official endpoint, a 60-second request timeout, and disabled retries; sanitize SDK failures and keep keys out of artifacts.
+- Request full text without timestamps and normalize it to one untimed segment, retaining returned language when valid.
+- Offline suite: 255 tests passed; all required checks passed. Implementation is accepted. CI uses SDK mocks only; it does not call the paid API.
 
 ### Iteration 4 — Local Whisper STT adapter
 

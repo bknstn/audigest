@@ -43,6 +43,7 @@ def prepare_environment(monkeypatch: pytest.MonkeyPatch, cache_dir: Path) -> Non
     monkeypatch.delenv("AUDIGEST_STT_PROVIDER", raising=False)
     monkeypatch.delenv("AUDIGEST_LANGUAGE", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
 
 
 class FakeResponse:
@@ -293,6 +294,17 @@ def test_youtube_audio_formats_exclude_video_and_manifests() -> None:
     assert select_audio_format(metadata, "fake").request_url.endswith("signature=fresh")
 
 
+def test_youtube_audio_selection_filters_formats_unsupported_by_elevenlabs() -> None:
+    unsupported = {**audio_format("https://media.example/audio.caf"), "ext": "caf"}
+    accepted = {**audio_format("https://media.example/audio.m4a"), "format_id": "accepted"}
+    metadata = make_metadata(formats=[unsupported, accepted])
+
+    assert select_audio_format(metadata, "elevenlabs").format_id == "accepted"
+    only_unsupported = make_metadata(formats=[unsupported])
+    with pytest.raises(RetrievalError, match="supported direct audio-only format"):
+        select_audio_format(only_unsupported, "elevenlabs")
+
+
 def test_ytdlp_command_disables_user_configuration_and_manifest_routes() -> None:
     command = _yt_dlp_command(VIDEO_URL)
 
@@ -482,6 +494,35 @@ def test_manual_captions_win_before_openai_and_preserve_metadata(
     assert "manual/en" in payload["origin"]["uri"]
     assert "secret" not in payload["origin"]["uri"]
     assert payload["segments"][0]["start"] == 1.0
+
+
+def test_youtube_caption_wins_over_keyless_elevenlabs_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    metadata = make_metadata(
+        subtitles={"en": [{"ext": "vtt", "url": "https://youtube.com/captions?sig=private"}]},
+    )
+    monkeypatch.setattr("audigest.service.get_youtube_metadata", lambda _ref: metadata)
+    requested, responses = install_caption_response(monkeypatch, [VTT])
+    monkeypatch.setattr(
+        "audigest.service.get_provider",
+        lambda *_: pytest.fail("usable captions must not select the ElevenLabs provider"),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["ingest", VIDEO_URL, "--provider", "elevenlabs", "--language", "en", "--json"],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["text"] == "Synthetic caption."
+    assert payload["provider"] == "youtube-captions"
+    assert payload["origin"]["kind"] == "captions"
+    assert len(requested) == 1
+    assert responses[0].closed
 
 
 def test_caption_cache_identity_ignores_rotated_signed_url(

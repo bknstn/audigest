@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from audigest.errors import ConfigurationError, ProviderError
+from audigest.stt.elevenlabs import ElevenLabsTranscriptionProvider
 from audigest.stt.fake import FakeSTTProvider
 from audigest.stt.router import get_provider
 
@@ -41,7 +42,11 @@ def test_openai_is_available_only_when_explicitly_selected(monkeypatch: pytest.M
         get_provider("auto")
 
 
-@pytest.mark.parametrize("name", ["elevenlabs", "local"])
+def test_elevenlabs_is_available_only_when_explicitly_selected() -> None:
+    assert isinstance(get_provider("elevenlabs"), ElevenLabsTranscriptionProvider)
+
+
+@pytest.mark.parametrize("name", ["local"])
 def test_router_explains_unimplemented_providers(name: str) -> None:
     with pytest.raises(ProviderError, match="not implemented"):
         get_provider(name)

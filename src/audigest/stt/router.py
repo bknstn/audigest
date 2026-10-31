@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from audigest.errors import ConfigurationError, ProviderError
 from audigest.stt.base import TranscriptionProvider
+from audigest.stt.elevenlabs import ElevenLabsTranscriptionProvider
 from audigest.stt.fake import FakeSTTProvider
 from audigest.stt.openai import OpenAITranscriptionProvider
 
@@ -17,15 +18,19 @@ def get_provider(name: str) -> TranscriptionProvider:
         return FakeSTTProvider()
     if name == "openai":
         return OpenAITranscriptionProvider()
+    if name == "elevenlabs":
+        return ElevenLabsTranscriptionProvider()
     if name == "auto":
         raise ProviderError(
             "Provider 'auto' reuses matching cached transcripts but does not select an STT "
-            "provider. Choose --provider fake or --provider openai to run STT."
+            "provider. Choose --provider fake, --provider openai, or --provider elevenlabs "
+            "to run STT."
         )
     if name in _KNOWN_PROVIDERS:
         raise ProviderError(
             f"The '{name}' STT provider is not implemented in this version. Select --provider "
-            "fake for deterministic offline STT or --provider openai for OpenAI STT."
+            "fake for deterministic offline STT, --provider openai for OpenAI STT, or "
+            "--provider elevenlabs for ElevenLabs STT."
         )
     raise ConfigurationError(
         "Unknown STT provider. Choose one of: auto, fake, openai, elevenlabs, local"

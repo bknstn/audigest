@@ -4,7 +4,7 @@ Audigest is designed to turn spoken media into reusable transcripts, then apply 
 
 Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt` and `.md`, `.srt`, and `.vtt` directly, including explicitly supplied HTTP(S) URLs ending in those formats. `ingest` also accepts direct HTTP(S) media URLs and public single-video YouTube watch, `youtu.be`, shorts, and embed URLs. Markdown is a direct input only. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. An explicit `--transcript` takes priority over those sidecars and YouTube metadata/caption lookup. It reuses a valid matching cached transcript before attempting STT. If a selected transcript is malformed, Audigest reports the problem and does not silently skip it to invoke STT.
 
-For `ingest`, provider selection applies only after no usable transcript, caption, text, or matching cache is available. `transcribe` is the separate explicit STT-only command for local media. The deterministic `fake` provider is an offline option for exercising STT; it does not recognize speech or describe audio. Explicitly selecting `openai` enables the OpenAI API for the ingest fallback or explicit transcribe path. `auto` never selects an STT provider, even when `OPENAI_API_KEY` is set. Other providers are not implemented.
+For `ingest`, provider selection applies only after no usable transcript, caption, text, or matching cache is available. `transcribe` is the separate explicit STT-only command for local media. The deterministic `fake` provider is an offline option for exercising STT; it does not recognize speech or describe audio. Explicitly selecting `openai` or `elevenlabs` enables that API for the ingest fallback or explicit transcribe path. `auto` never selects an STT provider, even when an API key is set. Local Whisper and other providers are not implemented.
 
 ## Quick start
 
@@ -109,7 +109,19 @@ OpenAI accepts `.flac`, `.m4a`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.ogg`, `.wav`
 
 The base installation (`uv sync --all-groups`) remains usable without the optional OpenAI SDK. Install the `openai` extra only when you want to select the OpenAI fallback.
 
-The `fake` provider can exercise the local fallback path, but does not recognize speech or describe audio. Other real STT providers and transcript processors are future work. For example, the following processor commands are not available yet:
+To use ElevenLabs Scribe, install the optional SDK and set an API key in the environment:
+
+```bash
+uv sync --all-groups --extra elevenlabs
+export ELEVENLABS_API_KEY="..."
+uv run --extra elevenlabs audigest transcribe ./episode.mp3 --provider elevenlabs --language en
+```
+
+The ElevenLabs adapter uses the [`scribe_v2` model](https://elevenlabs.io/docs/api-reference/speech-to-text/convert) through the fixed `https://api.elevenlabs.io/v1/speech-to-text` endpoint. It reads only `ELEVENLABS_API_KEY`, uses a 60-second timeout with retries and redirects disabled, and never stores the key. The API accepts common audio/video formats up to 3 GB; unsupported local formats are rejected before upload. Audigest does not convert or split files. It requests no timestamps and stores the returned text as one untimed segment, preserving the response language when supplied and otherwise using the requested language hint. This calls the paid ElevenLabs API when a cache miss requires transcription.
+
+The base installation remains usable without the optional ElevenLabs SDK. Install the `elevenlabs` extra only when you want to select this provider.
+
+The `fake` provider can exercise the local fallback path, but does not recognize speech or describe audio. Local Whisper and transcript processors are future work. For example, the following processor commands are not available yet:
 
 ```bash
 audigest summarize <transcript-id>
@@ -126,8 +138,9 @@ Configuration precedence is CLI flags, environment variables, optional TOML conf
 | `AUDIGEST_CACHE_DIR` | Override the local cache root. |
 | `AUDIGEST_CONFIG_FILE` | Override the TOML config file path. |
 | `OPENAI_API_KEY` | Optional OpenAI API credential, used only when the OpenAI provider is selected and a cache miss requires STT. |
+| `ELEVENLABS_API_KEY` | Optional ElevenLabs API credential, used only when the ElevenLabs provider is selected and a cache miss requires STT. |
 
-Credentials are never accepted in TOML or stored in transcript/cache files. Keep `OPENAI_API_KEY` in the environment; other provider credentials remain future work.
+Credentials are never accepted in TOML or stored in transcript/cache files. Keep provider API keys in the environment.
 
 Example TOML configuration (no credentials):
 

@@ -559,6 +559,14 @@ def select_audio_format(metadata: YouTubeMetadata, provider: str) -> YouTubeAudi
             for audio_format in metadata.audio_formats
             if audio_format.suffix in SUPPORTED_AUDIO_EXTENSIONS
         ]
+    elif provider == "elevenlabs":
+        from audigest.stt.elevenlabs import SUPPORTED_AUDIO_EXTENSIONS
+
+        candidates = [
+            audio_format
+            for audio_format in metadata.audio_formats
+            if audio_format.suffix in SUPPORTED_AUDIO_EXTENSIONS
+        ]
     else:
         candidates = list(metadata.audio_formats)
     if not candidates:
