@@ -6,7 +6,7 @@ Read [SAFETY.md](SAFETY.md) before changing code, adding fixtures, or handling m
 
 Before every product implementation, locate and read the current [NORTH_STAR.md](NORTH_STAR.md) in full, even if it was read in an earlier task. Map the proposed behavior to the relevant North Star section, current milestone, and user's request; implement only the authorized work needed for that scope. Newer explicit user instructions and corrections take precedence, including the strategy-first transcript/caption acquisition, STT-only fallback, text ingestion, and optional timestamps.
 
-The North Star's product direction is a high-level `audigest ingest <source>` command that obtains the best available transcript; `transcribe` is the explicit STT path and fallback. The target acquisition priority is supplied text/Markdown transcript, publisher-provided transcript, captions/subtitles, then STT. Durable canonical transcripts must retain origin/provenance, including source and provider details when relevant. These are product priorities, not blanket authorization to expand a task. In this repository, strategy-first behavior remains in the current `transcribe` workflow; `ingest`, Markdown input, publisher-transcript routes, and richer explicit origin metadata are future alignment gaps. Do not change current behavior or fill those gaps unless the user's task authorizes it.
+The North Star's product direction is a high-level `audigest ingest <source>` command that obtains the best available transcript; `transcribe` is the explicit STT path and fallback. The target acquisition priority is supplied text/Markdown transcript, publisher-provided transcript, captions/subtitles, then STT. Durable canonical transcripts must retain origin/provenance, including source and provider details when relevant. These are product priorities, not blanket authorization to expand a task. In this repository, strategy-first behavior is available through `ingest` and its `transcribe` compatibility alias. Markdown input, publisher-transcript routes, and richer explicit origin metadata remain future alignment gaps; the separate explicit-STT split also remains deferred. Do not change current behavior or fill those gaps unless the user's task authorizes it.
 
 Identify and justify any material deviation before coding. Ask the user for direction only when the product scope conflicts or the work would expand beyond what they authorized. If `NORTH_STAR.md` is missing or unreadable, search the repository and locations the user named; do not invent its contents, create a placeholder, or substitute an older handoff. Ask the user for its path and pause product implementation; updating guidance itself may continue.
 
@@ -14,13 +14,13 @@ Identify and justify any material deviation before coding. Ask the user for dire
 
 Audigest is a small, local-first, CLI tool built around the flow **local source in → existing transcript acquisition → canonical transcript → task-specific output**. Prefer usable text already present next to or in the source; speech-to-text (STT) is a fallback. Keep the core explicit and provider-independent: acquisition strategies produce the canonical transcript model, and later tools consume that model.
 
-The first session covers Milestone 0 and a local, strategy-first transcript vertical slice: direct canonical transcript JSON, UTF-8 `.txt`, `.srt`, and `.vtt` input; deterministic adjacent transcript discovery for local media; valid cache reuse; and fake STT only when no usable transcript source exists. The fake provider is an explicit fallback (`--provider fake`), never the first choice. Provider selection controls only STT fallback and must not override an existing transcript or caption. `auto` reuses a matching valid cached transcript before considering STT; otherwise it fails usefully when STT fallback needs a provider. There must be no API integrations or runtime network access in this scope.
+The current milestone covers Milestone 0 and a local, strategy-first transcript vertical slice: direct canonical transcript JSON, UTF-8 `.txt`, `.srt`, and `.vtt` input; deterministic adjacent transcript discovery for local media; valid cache reuse; and STT only when no usable transcript source exists. The fake provider (`--provider fake`) remains a deterministic offline fallback, never the first choice. Explicit `--provider openai` enables the OpenAI STT fallback after acquisition and cache lookup; it is the only current runtime network path. Provider selection must not override an existing transcript or caption. `auto` reuses a matching valid cached transcript and otherwise fails usefully without selecting a provider, regardless of whether `OPENAI_API_KEY` is set.
 
 The local resolver accepts canonical `.json`, UTF-8 `.txt`, `.srt`, `.vtt`, and supported media files. For media such as `episode.mp3`, check adjacent candidates in this exact order: `episode.transcript.json`, `episode.vtt`, `episode.srt`, `episode.txt`. A malformed existing candidate must produce a clear source error; do not silently skip it and invoke STT. Only use STT after direct transcript/text/caption inputs, applicable adjacent candidates, and a matching valid cache have been considered. Do not add a force-STT option in this scope.
 
 Transcript segments may be timed or untimed. For each segment, `start` and `end` are either both absent/`null` or both present and valid. Renderers must omit timestamps when they are absent and never invent timing information.
 
-Defer YouTube, direct HTTP(S), RSS, Spotify, real STT providers (including OpenAI), LLMs, processors (`summarize`, `apply`, `english`), RAG, embeddings, databases, GUI, background jobs, and telemetry. Real providers are future STT fallbacks, after transcript acquisition has been attempted. Do not create placeholder roadmap modules unless a later task specifically brings them into scope.
+Defer YouTube, direct HTTP(S), RSS, Spotify, other real STT providers (including ElevenLabs and local Whisper), LLMs, processors (`summarize`, `apply`, `english`), RAG, embeddings, databases, GUI, background jobs, and telemetry. OpenAI is the current explicit STT fallback after transcript acquisition has been attempted. Do not create placeholder roadmap modules unless a later task specifically brings them into scope.
 
 ## Initial structure
 
@@ -53,6 +53,7 @@ src/audigest/
     base.py
     router.py
     fake.py
+    openai.py  # optional, explicitly selected remote STT fallback
   renderers/
     json.py
     markdown.py

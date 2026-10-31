@@ -29,11 +29,19 @@ def test_fake_provider_preserves_explicit_language(tmp_path: Path) -> None:
 
 def test_router_requires_explicit_fake_provider() -> None:
     assert get_provider("fake").name == "fake"
-    with pytest.raises(ProviderError, match="Select --provider fake"):
+    with pytest.raises(ProviderError, match="does not select an STT provider"):
         get_provider("auto")
 
 
-@pytest.mark.parametrize("name", ["openai", "elevenlabs", "local"])
+def test_openai_is_available_only_when_explicitly_selected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
+
+    assert get_provider("openai").name == "openai"
+    with pytest.raises(ProviderError, match="does not select an STT provider"):
+        get_provider("auto")
+
+
+@pytest.mark.parametrize("name", ["elevenlabs", "local"])
 def test_router_explains_unimplemented_providers(name: str) -> None:
     with pytest.raises(ProviderError, match="not implemented"):
         get_provider(name)

@@ -5,7 +5,7 @@ Audigest reads audio, video, transcripts, captions, and text that may contain pr
 ## Files, media, and caches
 
 - Never commit API keys, access tokens, cookies, private downloaded media, or user transcripts.
-- Never persist credentials in transcript files, cache metadata, configuration defaults, or generated output. Prefer environment variables for future provider credentials.
+- Never persist credentials in transcript files, cache metadata, configuration defaults, or generated output. The OpenAI provider reads only `OPENAI_API_KEY` from the environment; other provider credentials are future work.
 - Do not log secrets, authorization values, complete request headers, or full private transcript content in diagnostics.
 - Keep caches, `.env` files, model files, media, and generated transcripts out of version control with `.gitignore` rules.
 - A local original media, transcript, caption, or text file is user-owned input: read it in place; never copy it into the cache, modify it, or delete it.
@@ -23,15 +23,15 @@ Audigest reads audio, video, transcripts, captions, and text that may contain pr
 
 ## Network and source boundaries
 
-- The first-session transcript-first implementation must make no runtime network requests and must not call external APIs. It reads local canonical transcript JSON, UTF-8 text, SRT/VTT captions, and deterministic adjacent sidecars before considering STT.
+- Transcript-first ingestion reads local canonical transcript JSON, UTF-8 text, SRT/VTT captions, and deterministic adjacent sidecars before considering STT. The only current runtime network path is the explicit `--provider openai` fallback after cache lookup; `auto` never selects a provider or reads `OPENAI_API_KEY`.
 - A malformed existing transcript/text/caption candidate must fail clearly. Never skip malformed user content and invoke STT in its place; that could send audio to a provider or incur an unexpected cost.
 - STT is a fallback only. `--provider` selects that fallback and does not override an existing usable transcript or caption. `auto` reuses a matching valid cache before STT; if no cache matches and no provider is available, it must fail clearly.
 - Canonical segments may omit timing. A segment's start and end must either both be absent or both be valid timestamps. Renderers must not invent timestamps for untimed text.
-- Future integrations must use explicit provider/source adapters, bounded timeouts, and useful errors. Do not add hidden network calls or send media anywhere without an explicit user-selected provider.
+- The OpenAI fallback and future integrations must use explicit provider/source adapters, bounded timeouts, and useful errors. Do not add hidden network calls or send media anywhere without an explicit user-selected provider.
 - Never bypass authentication, paywalls, DRM, or access controls. Respect platform terms and copyright.
 - Spotify support, if implemented later, may resolve public metadata and map an episode to its publisher-hosted RSS enclosure. Never download or rip audio from Spotify streams. If a mapping is ambiguous, report the available metadata and fail rather than guessing.
-- For future provider credentials, use environment variables first. Do not support persisted config-file secrets without documenting their filesystem and security implications.
+- Use environment variables for provider credentials. The current OpenAI integration accepts only `OPENAI_API_KEY`; never add persisted config-file secrets without documenting their filesystem and security implications.
 
 ## Scope guard
 
-For the first session, acquire existing local transcript/caption/text data before STT. Select the deterministic fake provider explicitly only when fallback is needed. `auto` reuses a matching valid cached transcript, and otherwise must explain that no fallback provider is available. Keep real STT and LLM providers, processors, project-context ingestion, RAG, embeddings, databases, and network-backed source resolution out of this implementation until separately scoped.
+Acquire existing local transcript/caption/text data and check the matching cache before STT. The deterministic fake provider is an offline fallback; OpenAI is available only when the user explicitly selects `--provider openai` and supplies `OPENAI_API_KEY`. `auto` reuses a matching valid cached transcript and otherwise fails without selecting a provider, even when an API key exists. Keep other real STT providers, LLMs, processors, project-context ingestion, RAG, embeddings, databases, and network-backed source resolution out of scope until separately authorized.

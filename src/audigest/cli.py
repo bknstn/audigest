@@ -14,7 +14,10 @@ from audigest.service import transcribe as transcribe_source
 
 app = typer.Typer(
     name="audigest",
-    help="Reuse local transcripts, captions, and text; transcribe media when needed.",
+    help=(
+        "Obtain the best available local transcript; use STT only when no transcript is available. "
+        "'transcribe' is a compatibility alias for 'ingest'."
+    ),
     no_args_is_help=True,
     add_completion=False,
 )
@@ -33,8 +36,7 @@ def main() -> None:
     """Manage local transcript creation."""
 
 
-@app.command()
-def transcribe(
+def _ingest(
     source: str = typer.Argument(
         ...,
         help=(
@@ -68,7 +70,7 @@ def transcribe(
         help="Keep future generated media; local source files are read in place.",
     ),
 ) -> None:
-    """Acquire a local transcript, caption, text file, or media transcript."""
+    """Obtain a transcript from a local file, using STT only as a fallback."""
     typer.echo("Resolving source and checking the transcript cache...", err=True)
     try:
         result = transcribe_source(
@@ -103,3 +105,13 @@ def transcribe(
             )
         )
     )
+
+
+app.command(
+    name="ingest",
+    help="Obtain the best available local transcript; STT is used only as a fallback.",
+)(_ingest)
+app.command(
+    name="transcribe",
+    help="Compatibility alias for 'ingest'; provider selection still applies only to STT fallback.",
+)(_ingest)

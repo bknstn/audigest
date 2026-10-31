@@ -12,9 +12,16 @@ from typer.testing import CliRunner
 from audigest.cli import app
 from audigest.errors import MissingDependencyError
 from audigest.models import SourceInfo, Transcript, TranscriptSegment
+from audigest.stt.openai import OpenAITranscriptionProvider
 from audigest.stt.router import get_provider
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "sample.wav"
+
+
+@pytest.fixture(params=("ingest", "transcribe"))
+def command(request: pytest.FixtureRequest) -> str:
+    """Exercise the primary command and its compatibility alias."""
+    return str(request.param)
 
 
 def prepare_environment(monkeypatch: pytest.MonkeyPatch, cache_dir: Path) -> None:
@@ -24,6 +31,7 @@ def prepare_environment(monkeypatch: pytest.MonkeyPatch, cache_dir: Path) -> Non
     monkeypatch.setenv("AUDIGEST_CONFIG_FILE", str(config_file))
     monkeypatch.delenv("AUDIGEST_STT_PROVIDER", raising=False)
     monkeypatch.delenv("AUDIGEST_LANGUAGE", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 
 def make_canonical_transcript(text: str = "Synthetic canonical transcript.") -> Transcript:
@@ -50,24 +58,164 @@ def make_canonical_transcript(text: str = "Synthetic canonical transcript.") -> 
     )
 
 
-def test_help_and_transcribe_help_work() -> None:
+def test_help_and_command_help_work() -> None:
     runner = CliRunner()
 
     root_help = runner.invoke(app, ["--help"])
+    ingest_help = runner.invoke(app, ["ingest", "--help"])
     transcribe_help = runner.invoke(app, ["transcribe", "--help"])
 
     assert root_help.exit_code == 0
     assert "Usage: audigest" in root_help.stdout
-    assert "local transcripts, captions, and text" in root_help.stdout
+    assert "ingest" in root_help.stdout
+    assert "transcribe" in root_help.stdout
+    assert "compatibility alias" in root_help.stdout
+    assert ingest_help.exit_code == 0
     assert transcribe_help.exit_code == 0
     for option in ("--provider", "--language", "--json", "--no-cache", "--keep-media"):
+        assert option in ingest_help.stdout
         assert option in transcribe_help.stdout
-    assert "canonical JSON" in transcribe_help.stdout
-    assert "Timing may be" in transcribe_help.stdout
-    assert "unavailable." in transcribe_help.stdout
+    assert "canonical JSON" in ingest_help.stdout
+    assert "Timing may be" in ingest_help.stdout
+    assert "unavailable." in ingest_help.stdout
+    assert "Compatibility alias" in transcribe_help.stdout
+
+
+@pytest.mark.parametrize(
+    ("first_command", "second_command"),
+    [("ingest", "transcribe"), ("transcribe", "ingest")],
+)
+def test_commands_share_cached_transcripts(
+    first_command: str,
+    second_command: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    runner = CliRunner()
+
+    first = runner.invoke(
+        app,
+        [first_command, str(FIXTURE), "--provider", "fake", "--json"],
+    )
+    second = runner.invoke(
+        app,
+        [second_command, str(FIXTURE), "--provider", "auto", "--json"],
+    )
+
+    assert first.exit_code == second.exit_code == 0
+    assert json.loads(first.stdout)["id"] == json.loads(second.stdout)["id"]
+    assert json.loads(first.stdout) == json.loads(second.stdout)
+    assert "Using cached transcript." in second.stderr
+
+
+def test_openai_cli_fallback_persists_and_replays_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    prepare_environment(monkeypatch, cache_dir)
+    synthetic_key = "synthetic-cli-test-key-never-valid"
+    monkeypatch.setenv("OPENAI_API_KEY", synthetic_key)
+    calls = 0
+    request: dict[str, Any] = {}
+
+    class MockTranscriptions:
+        def create(self, **kwargs: Any) -> dict[str, Any]:
+            request.update(kwargs)
+            assert kwargs["file"].read() == FIXTURE.read_bytes()
+            return {"text": "Synthetic CLI transcription.", "languages": [{"code": "en"}]}
+
+    class MockClient:
+        def __init__(self) -> None:
+            self.audio = type("Audio", (), {})()
+            self.audio.transcriptions = MockTranscriptions()
+            self.closed = False
+
+        def __enter__(self) -> "MockClient":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            _ = args
+            self.closed = True
+
+    client = MockClient()
+
+    def make_client(**options: Any) -> MockClient:
+        nonlocal calls
+        calls += 1
+        assert options["base_url"] == "https://api.openai.com/v1"
+        assert options["timeout"] == 60.0
+        assert options["max_retries"] == 0
+        return client
+
+    monkeypatch.setattr(
+        "audigest.stt.router.OpenAITranscriptionProvider",
+        lambda: OpenAITranscriptionProvider(client_factory=make_client),
+    )
+    runner = CliRunner()
+    first = runner.invoke(
+        app,
+        ["ingest", str(FIXTURE), "--provider", "openai", "--language", "en", "--json"],
+    )
+
+    assert first.exit_code == 0, first.stderr
+    payload = json.loads(first.stdout)
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-transcribe"
+    assert payload["language"] == "en"
+    assert payload["text"] == "Synthetic CLI transcription."
+    assert payload["segments"] == [
+        {"start": None, "end": None, "text": "Synthetic CLI transcription.", "speaker": None}
+    ]
+    assert request["extra_body"] == {"languages": ["en"]}
+    assert client.closed
+    assert synthetic_key not in first.stdout + first.stderr
+    assert all(
+        synthetic_key not in path.read_text(encoding="utf-8")
+        for path in cache_dir.rglob("*")
+        if path.is_file()
+    )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    second = runner.invoke(
+        app,
+        ["transcribe", str(FIXTURE), "--provider", "openai", "--language", "en", "--json"],
+    )
+
+    assert second.exit_code == 0, second.stderr
+    assert json.loads(second.stdout) == payload
+    assert "Using cached transcript." in second.stderr
+    assert synthetic_key not in second.stdout + second.stderr
+    assert calls == 1
+
+
+def test_auto_does_not_use_openai_key_implicitly(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_environment(monkeypatch, tmp_path / "cache")
+    synthetic_key = "synthetic-auto-test-key-never-valid"
+    monkeypatch.setenv("OPENAI_API_KEY", synthetic_key)
+
+    def unexpected_openai_client(*_: Any, **__: Any) -> Any:
+        pytest.fail("auto must not create an OpenAI client, even when a key is set")
+
+    monkeypatch.setattr(OpenAITranscriptionProvider, "_make_client", unexpected_openai_client)
+
+    result = CliRunner().invoke(
+        app,
+        ["ingest", str(FIXTURE), "--provider", "auto", "--json"],
+    )
+
+    assert result.exit_code == 5
+    assert result.stdout == ""
+    assert "does not select an STT provider" in result.stderr
+    assert synthetic_key not in result.stderr
 
 
 def test_json_mode_is_pure_and_persists_all_three_artifacts(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -77,7 +225,7 @@ def test_json_mode_is_pure_and_persists_all_three_artifacts(
 
     result = runner.invoke(
         app,
-        ["transcribe", str(FIXTURE), "--provider", "fake", "--json"],
+        [command, str(FIXTURE), "--provider", "fake", "--json"],
     )
 
     assert result.exit_code == 0, result.stderr
@@ -95,6 +243,7 @@ def test_json_mode_is_pure_and_persists_all_three_artifacts(
 
 
 def test_human_mode_sends_progress_to_stderr_and_result_paths_to_stdout(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -102,7 +251,7 @@ def test_human_mode_sends_progress_to_stderr_and_result_paths_to_stdout(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(FIXTURE), "--provider", "fake"],
+        [command, str(FIXTURE), "--provider", "fake"],
     )
 
     assert result.exit_code == 0, result.stderr
@@ -113,6 +262,7 @@ def test_human_mode_sends_progress_to_stderr_and_result_paths_to_stdout(
 
 
 def test_direct_canonical_json_preserves_transcript_content_without_selecting_provider(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -121,7 +271,7 @@ def test_direct_canonical_json_preserves_transcript_content_without_selecting_pr
     canonical = make_canonical_transcript()
     transcript_file.write_text(canonical.model_dump_json(), encoding="utf-8")
 
-    result = CliRunner().invoke(app, ["transcribe", str(transcript_file), "--json"])
+    result = CliRunner().invoke(app, [command, str(transcript_file), "--json"])
 
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -137,6 +287,7 @@ def test_direct_canonical_json_preserves_transcript_content_without_selecting_pr
 
 
 def test_utf8_text_is_acquired_as_untimed_transcript_even_with_provider_option(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -148,7 +299,7 @@ def test_utf8_text_is_acquired_as_untimed_transcript_even_with_provider_option(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(text_file), "--provider", "openai", "--json"],
+        [command, str(text_file), "--provider", "openai", "--json"],
     )
 
     assert result.exit_code == 0, result.stderr
@@ -170,6 +321,7 @@ def test_utf8_text_is_acquired_as_untimed_transcript_even_with_provider_option(
     ],
 )
 def test_direct_caption_files_preserve_timing_without_stt(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     suffix: str,
@@ -183,7 +335,7 @@ def test_direct_caption_files_preserve_timing_without_stt(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(caption_file), "--provider", "openai", "--json"],
+        [command, str(caption_file), "--provider", "openai", "--json"],
     )
 
     assert result.exit_code == 0, result.stderr
@@ -194,6 +346,7 @@ def test_direct_caption_files_preserve_timing_without_stt(
 
 
 def test_media_sidecar_order_prefers_canonical_json_first(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -215,7 +368,7 @@ def test_media_sidecar_order_prefers_canonical_json_first(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(media_file), "--provider", "openai", "--json"],
+        [command, str(media_file), "--provider", "openai", "--json"],
     )
 
     assert result.exit_code == 0, result.stderr
@@ -237,6 +390,7 @@ def test_media_sidecar_order_prefers_canonical_json_first(
     ],
 )
 def test_media_sidecars_follow_vtt_srt_text_order(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     sidecars: set[str],
@@ -254,7 +408,7 @@ def test_media_sidecars_follow_vtt_srt_text_order(
     for suffix in sidecars:
         media_file.with_suffix(suffix).write_text(sidecar_content[suffix], encoding="utf-8")
 
-    result = CliRunner().invoke(app, ["transcribe", str(media_file), "--json"])
+    result = CliRunner().invoke(app, [command, str(media_file), "--json"])
 
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -263,6 +417,7 @@ def test_media_sidecars_follow_vtt_srt_text_order(
 
 
 def test_malformed_existing_sidecar_fails_without_falling_back_to_stt(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -278,7 +433,7 @@ def test_malformed_existing_sidecar_fails_without_falling_back_to_stt(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(media_file), "--provider", "fake", "--json"],
+        [command, str(media_file), "--provider", "fake", "--json"],
     )
 
     assert result.exit_code == 3
@@ -289,6 +444,7 @@ def test_malformed_existing_sidecar_fails_without_falling_back_to_stt(
 
 
 def test_changed_adjacent_sidecar_invalidates_same_media_cache(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -298,7 +454,7 @@ def test_changed_adjacent_sidecar_invalidates_same_media_cache(
     sidecar = media_file.with_suffix(".txt")
     sidecar.write_text("First synthetic sidecar text.", encoding="utf-8")
     runner = CliRunner()
-    args = ["transcribe", str(media_file), "--provider", "auto", "--json"]
+    args = [command, str(media_file), "--provider", "auto", "--json"]
 
     first = runner.invoke(app, args)
     sidecar.write_text("Changed synthetic sidecar text.", encoding="utf-8")
@@ -311,6 +467,7 @@ def test_changed_adjacent_sidecar_invalidates_same_media_cache(
 
 
 def test_new_sidecar_takes_precedence_over_prior_fake_cache(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -321,7 +478,7 @@ def test_new_sidecar_takes_precedence_over_prior_fake_cache(
 
     transcribed = runner.invoke(
         app,
-        ["transcribe", str(media_file), "--provider", "fake", "--json"],
+        [command, str(media_file), "--provider", "fake", "--json"],
     )
     media_file.with_suffix(".txt").write_text(
         "New sidecar transcript wins over older STT cache.",
@@ -329,7 +486,7 @@ def test_new_sidecar_takes_precedence_over_prior_fake_cache(
     )
     acquired = runner.invoke(
         app,
-        ["transcribe", str(media_file), "--provider", "auto", "--json"],
+        [command, str(media_file), "--provider", "auto", "--json"],
     )
 
     assert transcribed.exit_code == acquired.exit_code == 0
@@ -343,6 +500,7 @@ def test_new_sidecar_takes_precedence_over_prior_fake_cache(
 
 
 def test_no_cache_still_uses_direct_text_input(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -350,7 +508,7 @@ def test_no_cache_still_uses_direct_text_input(
     text_file = tmp_path / "notes.txt"
     text_file.write_text("A direct text transcript.", encoding="utf-8")
     runner = CliRunner()
-    args = ["transcribe", str(text_file), "--provider", "openai", "--json"]
+    args = [command, str(text_file), "--provider", "openai", "--json"]
 
     initial = runner.invoke(app, args)
     refreshed = runner.invoke(app, [*args, "--no-cache"])
@@ -364,13 +522,14 @@ def test_no_cache_still_uses_direct_text_input(
 
 
 def test_corrupt_source_cache_reference_is_storage_error_not_stt_fallback(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     cache_dir = tmp_path / "cache"
     prepare_environment(monkeypatch, cache_dir)
     runner = CliRunner()
-    args = ["transcribe", str(FIXTURE), "--provider", "fake", "--json"]
+    args = [command, str(FIXTURE), "--provider", "fake", "--json"]
     first = runner.invoke(app, args)
     assert first.exit_code == 0, first.stderr
 
@@ -385,6 +544,7 @@ def test_corrupt_source_cache_reference_is_storage_error_not_stt_fallback(
 
 
 def test_cache_hit_skips_provider_invocation(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -403,12 +563,12 @@ def test_cache_hit_skips_provider_invocation(
 
     monkeypatch.setattr("audigest.service.get_provider", lambda _name: SpyProvider())
     runner = CliRunner()
-    args = ["transcribe", str(FIXTURE), "--provider", "fake", "--json"]
+    args = [command, str(FIXTURE), "--provider", "fake", "--json"]
 
     first = runner.invoke(app, args)
     second = runner.invoke(
         app,
-        ["transcribe", str(FIXTURE), "--provider", "auto", "--json"],
+        [command, str(FIXTURE), "--provider", "auto", "--json"],
     )
 
     assert first.exit_code == second.exit_code == 0
@@ -418,6 +578,7 @@ def test_cache_hit_skips_provider_invocation(
 
 
 def test_no_cache_skips_reads_but_writes_a_fresh_transcript(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -436,7 +597,7 @@ def test_no_cache_skips_reads_but_writes_a_fresh_transcript(
 
     monkeypatch.setattr("audigest.service.get_provider", lambda _name: SpyProvider())
     runner = CliRunner()
-    base_args = ["transcribe", str(FIXTURE), "--provider", "fake", "--json"]
+    base_args = [command, str(FIXTURE), "--provider", "fake", "--json"]
 
     initial = runner.invoke(app, base_args)
     fresh = runner.invoke(app, [*base_args, "--no-cache"])
@@ -450,6 +611,7 @@ def test_no_cache_skips_reads_but_writes_a_fresh_transcript(
 
 
 def test_content_mutation_invalidates_cache_for_same_path(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -457,7 +619,7 @@ def test_content_mutation_invalidates_cache_for_same_path(
     local_source = tmp_path / "sample.wav"
     shutil.copyfile(FIXTURE, local_source)
     runner = CliRunner()
-    args = ["transcribe", str(local_source), "--provider", "fake", "--json"]
+    args = [command, str(local_source), "--provider", "fake", "--json"]
 
     original = runner.invoke(app, args)
     local_source.write_bytes(local_source.read_bytes() + b"changed")
@@ -467,8 +629,8 @@ def test_content_mutation_invalidates_cache_for_same_path(
     assert json.loads(original.stdout)["id"] != json.loads(changed.stdout)["id"]
 
 
-def test_invalid_arguments_exit_two_with_no_stdout() -> None:
-    result = CliRunner().invoke(app, ["transcribe", "--unknown-option"])
+def test_invalid_arguments_exit_two_with_no_stdout(command: str) -> None:
+    result = CliRunner().invoke(app, [command, "--unknown-option"])
 
     assert result.exit_code == 2
     assert result.stdout == ""
@@ -481,11 +643,12 @@ def test_invalid_arguments_exit_two_with_no_stdout() -> None:
         ("/definitely/missing/audigest.wav", "fake", 3, "does not exist"),
         ("https://example.com/audio.wav", "fake", 3, "local file"),
         ("http://[", "fake", 3, "invalid source"),
-        (str(FIXTURE), "auto", 5, "no STT provider is available"),
-        (str(FIXTURE), "openai", 5, "not implemented"),
+        (str(FIXTURE), "auto", 5, "does not select an STT provider"),
+        (str(FIXTURE), "openai", 5, "OPENAI_API_KEY"),
     ],
 )
 def test_source_and_provider_failures_are_actionable_and_clean(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     source: str,
@@ -495,7 +658,7 @@ def test_source_and_provider_failures_are_actionable_and_clean(
 ) -> None:
     prepare_environment(monkeypatch, tmp_path / "cache")
 
-    result = CliRunner().invoke(app, ["transcribe", source, "--provider", provider, "--json"])
+    result = CliRunner().invoke(app, [command, source, "--provider", provider, "--json"])
 
     assert result.exit_code == expected_code
     assert result.stdout == ""
@@ -504,6 +667,7 @@ def test_source_and_provider_failures_are_actionable_and_clean(
 
 
 def test_missing_and_broken_explicit_config_are_clean_errors(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -513,14 +677,14 @@ def test_missing_and_broken_explicit_config_are_clean_errors(
 
     missing_result = CliRunner().invoke(
         app,
-        ["transcribe", str(FIXTURE), "--provider", "fake", "--json"],
+        [command, str(FIXTURE), "--provider", "fake", "--json"],
     )
     broken_config = tmp_path / "broken.toml"
     broken_config.write_text("provider = [\n")
     monkeypatch.setenv("AUDIGEST_CONFIG_FILE", str(broken_config))
     broken_result = CliRunner().invoke(
         app,
-        ["transcribe", str(FIXTURE), "--provider", "fake", "--json"],
+        [command, str(FIXTURE), "--provider", "fake", "--json"],
     )
 
     assert missing_result.exit_code == 2
@@ -534,12 +698,13 @@ def test_missing_and_broken_explicit_config_are_clean_errors(
 
 
 def test_invalid_cached_json_is_a_clean_storage_failure(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     prepare_environment(monkeypatch, tmp_path / "cache")
     runner = CliRunner()
-    args = ["transcribe", str(FIXTURE), "--provider", "fake"]
+    args = [command, str(FIXTURE), "--provider", "fake"]
     first = runner.invoke(app, args)
     assert first.exit_code == 0, first.stderr
 
@@ -554,6 +719,7 @@ def test_invalid_cached_json_is_a_clean_storage_failure(
 
 
 def test_provider_failure_is_sanitized_and_preserves_local_source(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -574,7 +740,7 @@ def test_provider_failure_is_sanitized_and_preserves_local_source(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(local_source), "--provider", "fake", "--json"],
+        [command, str(local_source), "--provider", "fake", "--json"],
     )
 
     assert result.exit_code == 5
@@ -587,6 +753,7 @@ def test_provider_failure_is_sanitized_and_preserves_local_source(
 
 
 def test_missing_dependency_error_keeps_exit_seven_without_partial_artifacts(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -610,7 +777,7 @@ def test_missing_dependency_error_keeps_exit_seven_without_partial_artifacts(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(local_source), "--provider", "fake", "--json"],
+        [command, str(local_source), "--provider", "fake", "--json"],
     )
 
     assert result.exit_code == 7
@@ -622,6 +789,7 @@ def test_missing_dependency_error_keeps_exit_seven_without_partial_artifacts(
 
 
 def test_keep_media_never_changes_or_copies_a_local_original(
+    command: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -632,7 +800,7 @@ def test_keep_media_never_changes_or_copies_a_local_original(
 
     result = CliRunner().invoke(
         app,
-        ["transcribe", str(local_source), "--provider", "fake", "--keep-media"],
+        [command, str(local_source), "--provider", "fake", "--keep-media"],
     )
 
     assert result.exit_code == 0, result.stderr
