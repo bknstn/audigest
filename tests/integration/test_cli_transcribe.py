@@ -246,7 +246,7 @@ def test_json_mode_is_pure_and_persists_all_three_artifacts(
     assert payload["schema_version"] == "1"
     assert payload["source"]["type"] == "local"
     assert payload["provider"] == "fake"
-    assert "Resolving local source" in result.stderr
+    assert "Resolving source" in result.stderr
     assert "Transcript ID" not in result.stdout
     item_dir = cache_dir / "items" / transcript_id
     assert (item_dir / "source.json").is_file()

@@ -19,6 +19,12 @@ class SourceResolutionError(AudigestError):
     exit_code = 3
 
 
+class RetrievalError(AudigestError):
+    """A remote transcript or caption could not be retrieved safely."""
+
+    exit_code = 4
+
+
 class ProviderError(AudigestError):
     """A requested transcription provider is unavailable or failed."""
 

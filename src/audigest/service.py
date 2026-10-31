@@ -1,10 +1,10 @@
-"""Application service for the local-file transcription slice."""
+"""Application service for local and direct remote transcript acquisition."""
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from audigest.acquisition import LocalTranscriptAcquirer
+from audigest.acquisition import AcquisitionResult, LocalTranscriptAcquirer
 from audigest.config import load_config
 from audigest.errors import AudigestError, ProviderError, SourceResolutionError
 from audigest.models import Transcript, TranscriptOrigin
@@ -12,6 +12,7 @@ from audigest.renderers import render_markdown
 from audigest.sources.base import SUPPORTED_MEDIA_EXTENSIONS
 from audigest.sources.detect import detect_source
 from audigest.sources.local import LocalFileResolver
+from audigest.sources.remote import fetch_remote_transcript
 from audigest.storage import FileTranscriptStore, cache_id_for
 from audigest.stt.router import get_provider
 
@@ -50,19 +51,29 @@ def _run_local_source(
         source_type = detect_source(source)
     except ValueError:
         raise SourceResolutionError("Source URL is malformed") from None
-    if source_type != "local":
+    acquisition: AcquisitionResult | None
+    if source_type == "direct":
+        if explicit_stt:
+            raise SourceResolutionError(
+                "The 'transcribe' command accepts local file media only; use 'ingest' for remote "
+                "transcript URLs."
+            )
+        remote = fetch_remote_transcript(str(source).strip())
+        resolved = remote.resolved_source
+        acquisition = LocalTranscriptAcquirer().acquire_remote(remote)
+    elif source_type == "local":
+        resolved = LocalFileResolver().resolve(source)
+        if explicit_stt and resolved.media_path.suffix.lower() not in SUPPORTED_MEDIA_EXTENSIONS:
+            raise SourceResolutionError(
+                "The 'transcribe' command accepts supported local file media only; "
+                "use 'ingest' for transcript, text, or caption files."
+            )
+        acquisition = None if explicit_stt else LocalTranscriptAcquirer().acquire(resolved)
+    else:
         raise SourceResolutionError(
-            f"Source type '{source_type}' is not supported yet; provide a local file path."
+            f"Source type '{source_type}' is not supported yet; provide a local file path or "
+            "a direct HTTP(S) transcript URL."
         )
-
-    resolved = LocalFileResolver().resolve(source)
-    if explicit_stt and resolved.media_path.suffix.lower() not in SUPPORTED_MEDIA_EXTENSIONS:
-        raise SourceResolutionError(
-            "The 'transcribe' command accepts supported local audio/video media only; "
-            "use 'ingest' for transcript, text, or caption files."
-        )
-
-    acquisition = None if explicit_stt else LocalTranscriptAcquirer().acquire(resolved)
     source_fingerprint = (
         resolved.content_sha256 if acquisition is None else acquisition.source_fingerprint
     )

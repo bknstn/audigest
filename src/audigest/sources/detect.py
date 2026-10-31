@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlsplit
 
 from audigest.errors import SourceResolutionError
 from audigest.models import SourceType
-from audigest.sources.base import SUPPORTED_MEDIA_EXTENSIONS
+from audigest.sources.base import SUPPORTED_MEDIA_EXTENSIONS, SUPPORTED_TEXT_EXTENSIONS
 
 _FEED_EXTENSIONS = frozenset({".atom", ".rss", ".xml"})
 
@@ -58,11 +58,12 @@ def detect_source(source: str | Path) -> SourceType:
     query = parsed.query.lower()
     if suffix in _FEED_EXTENSIONS or "format=rss" in query or "format=atom" in query:
         return "rss"
-    if suffix in SUPPORTED_MEDIA_EXTENSIONS:
+    if suffix in SUPPORTED_MEDIA_EXTENSIONS | SUPPORTED_TEXT_EXTENSIONS:
         return "direct"
     raise SourceResolutionError(
         "Unsupported URL source. Use a recognized YouTube or Spotify URL, an RSS feed URL, "
-        "a direct audio/video URL with a supported file extension, or a local media file."
+        "a direct audio/video URL or transcript/caption URL with a supported file extension, "
+        "or a local media file."
     )
 
 

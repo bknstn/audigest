@@ -6,6 +6,7 @@ from audigest.errors import (
     ConfigurationError,
     MissingDependencyError,
     ProviderError,
+    RetrievalError,
     SourceResolutionError,
     StorageError,
 )
@@ -28,6 +29,7 @@ _ERRORS = (
     ConfigurationError,
     SourceResolutionError,
     ProviderError,
+    RetrievalError,
     MissingDependencyError,
     StorageError,
 )
@@ -48,7 +50,7 @@ def _run_source_command(
     keep_media: bool,
     explicit_stt: bool,
 ) -> None:
-    typer.echo("Resolving local source and checking the transcript cache...", err=True)
+    typer.echo("Resolving source and checking the transcript cache...", err=True)
     try:
         action = transcribe_source if explicit_stt else ingest_source
         result = action(
@@ -89,9 +91,8 @@ def _ingest(
     source: str = typer.Argument(
         ...,
         help=(
-            "Local canonical JSON, UTF-8 text/Markdown, SRT/VTT captions, "
-            "or audio/video media path. "
-            "Timing may be unavailable."
+            "Local canonical JSON, UTF-8 text/Markdown, SRT/VTT captions, or audio/video path; "
+            "direct HTTP(S) transcript/caption URL. Timing may be unavailable."
         ),
     ),
     provider: str | None = typer.Option(

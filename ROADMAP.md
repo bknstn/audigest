@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, is implemented and review-accepted. The North Star MVP is not complete: remote transcript acquisition, additional STT providers, and canonical-transcript processors remain to be built. The next resume point is Iteration 2, remote source acquisition. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iteration 2a direct remote transcript/caption URL ingestion are implemented and review-accepted. The North Star MVP is not complete: remote media and publisher/video-platform transcript acquisition, additional STT providers, and canonical-transcript processors remain to be built. The current resume point is Iteration 2b, remote media and publisher acquisition. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -18,11 +18,19 @@ The local transcript vertical slice, including the explicit STT-only command, is
 - `ingest` remains strategy-first. `transcribe` is now explicit STT-only for supported local media and never inspects direct transcript inputs or adjacent sidecars.
 - Both commands look up STT results by the raw media fingerprint. Acquired transcript/caption entries use their existing effective fingerprints, so they cannot satisfy explicit `transcribe`; matching STT work remains reusable by either command.
 - `auto` remains cache-only. `--no-cache` reruns STT for `transcribe`, while `ingest` still honors acquired inputs before its STT fallback.
-- Offline suite: 164 tests passed. Implementation is accepted; iteration 2 is the next resume point and has not started.
+- Offline suite: 164 tests passed. Implementation is accepted.
 
 ## Remaining MVP iterations
 
-### Iteration 2 — Remote sources and existing transcript acquisition
+### Iteration 2a — Direct remote transcript documents
+
+- `ingest` accepts explicitly supplied HTTP(S) URLs ending in `.txt`, `.md`, `.json`, `.srt`, or `.vtt`; shared parsers produce canonical text/caption drafts and preserve embedded canonical source/origin metadata.
+- Remote GETs have bounded socket/total timeouts, redirect targets are limited to HTTP(S) without URL userinfo, response bodies are limited to 2 MiB, and query/fragment values are omitted from persisted URIs and diagnostics.
+- Remote responses are fetched and parsed before cache lookup. Cache identity includes a hash of the full query-bearing locator and response bytes; remote text URLs never select STT, even with `--provider openai`.
+- No remote media, publisher discovery, feed resolution, or video-platform caption retrieval is included in this slice. Offline tests mock all HTTP boundaries.
+- Implementation is accepted; offline suite: 190 tests passed. Iteration 2b is the current resume point and has not started.
+
+### Iteration 2b — Remote media and publisher transcript acquisition
 
 - Add bounded source adapters for approved direct media URLs and publisher/podcast routes. Resolve RSS or Spotify episode metadata to publisher-hosted enclosures when possible; never download or rip Spotify streams.
 - Acquire publisher-provided transcripts and captions before STT. For YouTube, use available captions first and consider STT only when captions are unavailable and an explicit fallback provider is configured.

@@ -1,4 +1,4 @@
-"""Deterministic acquisition of existing local transcripts and captions."""
+"""Normalize local and fetched transcripts and captions into canonical drafts."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from audigest.models import (
     TranscriptSegment,
 )
 from audigest.sources.base import SUPPORTED_TEXT_EXTENSIONS, ResolvedSource
+from audigest.sources.remote import RemoteTranscriptInput
 
 _SIDECAR_SUFFIXES = (".transcript.json", ".vtt", ".srt", ".txt")
 _FINGERPRINT_VERSION = "local-transcript-acquisition-v2"
@@ -44,7 +45,7 @@ class TranscriptAcquirer(Protocol):
 
 
 class LocalTranscriptAcquirer:
-    """Read direct local text or the first applicable adjacent sidecar."""
+    """Acquire local inputs and parse fetched remote documents with shared rules."""
 
     def acquire(self, resolved: ResolvedSource) -> AcquisitionResult | None:
         """Prefer direct transcript inputs, then prioritized media sidecars."""
@@ -73,6 +74,35 @@ class LocalTranscriptAcquirer:
                 )
         return None
 
+    def acquire_remote(self, remote: RemoteTranscriptInput) -> AcquisitionResult:
+        """Normalize fetched remote transcript bytes with the local parsers."""
+
+        try:
+            content = remote.content.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise SourceResolutionError("Remote transcript or caption is not valid UTF-8") from exc
+        input_fingerprint = hashlib.sha256(remote.content).hexdigest()
+        draft, source_info = self._parse_content(
+            content,
+            remote.suffix,
+            origin_uri=remote.origin_uri,
+            source_info=remote.resolved_source.source_info,
+        )
+        encoded = json.dumps(
+            [
+                "remote-transcript-acquisition-v1",
+                remote.suffix,
+                remote.locator_fingerprint,
+                input_fingerprint,
+            ],
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return AcquisitionResult(
+            draft=draft,
+            source_fingerprint=hashlib.sha256(encoded).hexdigest(),
+            source_info=source_info,
+        )
+
     def _acquire_file(
         self,
         path: Path,
@@ -89,6 +119,26 @@ class LocalTranscriptAcquirer:
             input_fingerprint,
             source_fingerprint,
         )
+        draft, source_info = self._parse_content(
+            content,
+            suffix,
+            origin_uri=path.as_uri(),
+            source_info=source_info,
+        )
+        return AcquisitionResult(
+            draft=draft,
+            source_fingerprint=effective_fingerprint,
+            source_info=source_info,
+        )
+
+    @staticmethod
+    def _parse_content(
+        content: str,
+        suffix: str,
+        *,
+        origin_uri: str,
+        source_info: SourceInfo | None,
+    ) -> tuple[TranscriptDraft, SourceInfo | None]:
         if suffix in {".txt", ".md"}:
             if not content.strip():
                 raise SourceResolutionError("Text transcript input is empty")
@@ -96,17 +146,15 @@ class LocalTranscriptAcquirer:
                 provider="text",
                 model=None,
                 language=None,
-                origin=TranscriptOrigin(kind="text", uri=path.as_uri(), format=suffix[1:]),
+                origin=TranscriptOrigin(kind="text", uri=origin_uri, format=suffix[1:]),
                 segments=[TranscriptSegment(text=content)],
             )
         elif suffix == ".json":
-            draft, canonical_source = self._canonical_json(content)
+            draft, canonical_source = LocalTranscriptAcquirer._canonical_json(content)
             if draft.origin is None:
                 draft = draft.model_copy(
                     update={
-                        "origin": TranscriptOrigin(
-                            kind="canonical", uri=path.as_uri(), format="json"
-                        )
+                        "origin": TranscriptOrigin(kind="canonical", uri=origin_uri, format="json")
                     }
                 )
             source_info = canonical_source
@@ -114,18 +162,12 @@ class LocalTranscriptAcquirer:
             draft = _caption_draft(content, suffix)
             draft = draft.model_copy(
                 update={
-                    "origin": TranscriptOrigin(
-                        kind="captions", uri=path.as_uri(), format=suffix[1:]
-                    )
+                    "origin": TranscriptOrigin(kind="captions", uri=origin_uri, format=suffix[1:])
                 }
             )
         else:
             raise SourceResolutionError("Unsupported transcript input type")
-        return AcquisitionResult(
-            draft=draft,
-            source_fingerprint=effective_fingerprint,
-            source_info=source_info,
-        )
+        return draft, source_info
 
     @staticmethod
     def _read_text(path: Path) -> tuple[str, str]:
