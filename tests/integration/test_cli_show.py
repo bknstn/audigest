@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from audigest.cli import app
@@ -145,6 +146,7 @@ def test_show_only_exposes_json_as_an_output_option() -> None:
     result = CliRunner().invoke(app, ["show", "--help"])
 
     assert result.exit_code == 0
-    assert "--json" in result.stdout
-    assert "--provider" not in result.stdout
-    assert "--no-cache" not in result.stdout
+    output = Text.from_ansi(result.stdout).plain
+    assert "--json" in output
+    assert "--provider" not in output
+    assert "--no-cache" not in output

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from audigest.cli import app
@@ -66,23 +67,26 @@ def test_help_and_command_help_work() -> None:
     root_help = runner.invoke(app, ["--help"])
     ingest_help = runner.invoke(app, ["ingest", "--help"])
     transcribe_help = runner.invoke(app, ["transcribe", "--help"])
+    root_output = Text.from_ansi(root_help.stdout).plain
+    ingest_output = Text.from_ansi(ingest_help.stdout).plain
+    transcribe_output = Text.from_ansi(transcribe_help.stdout).plain
 
     assert root_help.exit_code == 0
-    assert "Usage: audigest" in root_help.stdout
-    assert "ingest" in root_help.stdout
-    assert "show" in root_help.stdout
-    assert "transcribe" in root_help.stdout
+    assert "Usage: audigest" in root_output
+    assert "ingest" in root_output
+    assert "show" in root_output
+    assert "transcribe" in root_output
     assert ingest_help.exit_code == 0
     assert transcribe_help.exit_code == 0
     for option in ("--provider", "--language", "--json", "--no-cache", "--keep-media"):
-        assert option in ingest_help.stdout
-        assert option in transcribe_help.stdout
-    assert "canonical transcript JSON object" in ingest_help.stdout
-    assert "Timing may be" in ingest_help.stdout
-    assert "unavailable." in ingest_help.stdout
-    assert "STT fallback" in ingest_help.stdout
-    assert "Explicitly run STT" in transcribe_help.stdout
-    assert "sidecars are ignored" in transcribe_help.stdout
+        assert option in ingest_output
+        assert option in transcribe_output
+    assert "canonical transcript JSON object" in ingest_output
+    assert "Timing may be" in ingest_output
+    assert "unavailable." in ingest_output
+    assert "STT fallback" in ingest_output
+    assert "Explicitly run STT" in transcribe_output
+    assert "sidecars are ignored" in transcribe_output
 
 
 @pytest.mark.parametrize(

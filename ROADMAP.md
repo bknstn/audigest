@@ -114,6 +114,7 @@ The local transcript vertical slice, including the explicit STT-only command, an
 - Verify the complete local and mocked-source workflows, cache reuse/invalidation, optional timestamps, provenance, CLI output contracts, and error categories.
 - Document setup, provider selection, local and remote source behavior, processors, privacy, and common failure recovery.
 - Keep normal tests deterministic and offline. Never require credentials, paid APIs, or live external sources in CI.
+- CI hardening checkpoint: optional SDK absence is tested at the lazy import boundary, test sockets/DNS are guarded, and styled CLI assertions are ANSI-safe. The offline suite passed 542 tests both normally and with `FORCE_COLOR=1`; lint, formatting, typing, and diff checks passed. Final acceptance workflow and documentation audit remain pending; this does not mark the MVP complete.
 
 ## Boundaries and execution
 

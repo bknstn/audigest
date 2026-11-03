@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from audigest.cli import app
@@ -473,7 +474,7 @@ def test_cefr_level_is_required_by_cli(tmp_path: Path, monkeypatch: pytest.Monke
 
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert "--level" in result.stderr
+    assert "--level" in Text.from_ansi(result.stderr).plain
 
 
 @pytest.mark.parametrize(

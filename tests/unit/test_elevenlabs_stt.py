@@ -1,6 +1,5 @@
 """Offline tests for the optional ElevenLabs Scribe adapter."""
 
-import builtins
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -168,14 +167,17 @@ def test_missing_optional_sdk_fails_only_when_provider_is_used(
     monkeypatch.setenv("ELEVENLABS_API_KEY", SYNTHETIC_KEY)
     media_path = tmp_path / "missing-sdk.wav"
     media_path.write_bytes(b"synthetic")
-    real_import = builtins.__import__
 
-    def import_without_elevenlabs(name: str, *args: Any, **kwargs: Any) -> Any:
+    def import_without_elevenlabs(name: str, package: str | None = None) -> Any:
+        _ = package
         if name == "elevenlabs.client":
             raise ModuleNotFoundError("synthetic missing SDK")
-        return real_import(name, *args, **kwargs)
+        pytest.fail(f"Unexpected optional SDK import: {name}")
 
-    monkeypatch.setattr(builtins, "__import__", import_without_elevenlabs)
+    monkeypatch.setattr(
+        "audigest.stt.elevenlabs.importlib.import_module",
+        import_without_elevenlabs,
+    )
 
     with pytest.raises(MissingDependencyError, match="optional SDK"):
         ElevenLabsTranscriptionProvider().transcribe(media_path, language=None)

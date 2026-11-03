@@ -1,6 +1,5 @@
 """Offline CLI tests for ElevenLabs STT and cache reuse."""
 
-import builtins
 import json
 from pathlib import Path
 from typing import Any
@@ -166,14 +165,17 @@ def test_cli_reports_missing_elevenlabs_extra_as_dependency_error(
     cache_dir = tmp_path / "cache"
     prepare_environment(monkeypatch, cache_dir)
     monkeypatch.setenv("ELEVENLABS_API_KEY", SYNTHETIC_KEY)
-    real_import = builtins.__import__
 
-    def import_without_elevenlabs(name: str, *args: Any, **kwargs: Any) -> Any:
+    def import_without_elevenlabs(name: str, package: str | None = None) -> Any:
+        _ = package
         if name == "elevenlabs.client":
             raise ModuleNotFoundError("synthetic missing optional SDK")
-        return real_import(name, *args, **kwargs)
+        pytest.fail(f"Unexpected optional SDK import: {name}")
 
-    monkeypatch.setattr(builtins, "__import__", import_without_elevenlabs)
+    monkeypatch.setattr(
+        "audigest.stt.elevenlabs.importlib.import_module",
+        import_without_elevenlabs,
+    )
     fixture = Path(__file__).parents[1] / "fixtures" / "sample.wav"
     result = CliRunner().invoke(
         app,
