@@ -71,6 +71,7 @@ class SelectedRSSEpisode:
     episode_identity_hash: str
     metadata_hash: str
     source_identity: str
+    selection_context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,8 +113,33 @@ def _normalize_item_link(final_feed_url: str, link: str | None) -> str | None:
         return None
 
 
-def _select_item(feed: RSSFeed, final_feed_url: str, selector: str | None) -> RSSItem:
+def _normalize_title(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return " ".join(value.casefold().split())
+
+
+def _select_item(
+    feed: RSSFeed,
+    final_feed_url: str,
+    selector: str | None,
+    expected_title: str | None,
+) -> RSSItem:
+    expected_normalized_title = _normalize_title(expected_title)
     if selector is None:
+        if expected_normalized_title is not None:
+            matches = [
+                item
+                for item in feed.items
+                if _normalize_title(item.title) == expected_normalized_title
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            raise SourceResolutionError(
+                "Spotify title matches "
+                f"{len(matches)} RSS episodes; check --feed, use --episode with an exact GUID "
+                "or item link, or provide --transcript."
+            )
         if len(feed.items) != 1:
             raise SourceResolutionError(
                 "RSS feed contains multiple episodes; specify --episode with an exact GUID "
@@ -146,7 +172,16 @@ def _select_item(feed: RSSFeed, final_feed_url: str, selector: str | None) -> RS
         )
     if len(matches) > 1:
         raise SourceResolutionError("The RSS episode selector matches more than one item.")
-    return matches[0]
+    selected = matches[0]
+    if (
+        expected_normalized_title is not None
+        and _normalize_title(selected.title) != expected_normalized_title
+    ):
+        raise SourceResolutionError(
+            "The selected RSS episode title does not match Spotify metadata; "
+            "check --feed or --episode, or provide --transcript."
+        )
+    return selected
 
 
 def _published_at(value: str | None) -> datetime | None:
@@ -174,11 +209,12 @@ def select_rss_episode(
     document: BoundedRemoteDocument,
     *,
     selector: str | None,
+    expected_title: str | None = None,
 ) -> SelectedRSSEpisode:
     """Parse one feed and select an episode without fetching its declared resources."""
 
     feed = parse_rss_feed(document.content)
-    item = _select_item(feed, document.final_url, selector)
+    item = _select_item(feed, document.final_url, selector, expected_title)
     identity_hash = _episode_identity(item)
     metadata_hash = _digest(
         [
@@ -308,19 +344,20 @@ def _resource_fingerprint(
     selected_language: str | None,
     kind: str,
 ) -> str:
-    return _digest(
-        [
-            "rss-transcript-acquisition-v1",
-            episode.feed_reference.locator_fingerprint,
-            episode.episode_identity_hash,
-            episode.metadata_hash,
-            locator_fingerprint,
-            content_sha256,
-            requested_language,
-            selected_language,
-            kind,
-        ]
-    )
+    parts: list[str | None] = [
+        "rss-transcript-acquisition-v1",
+        episode.feed_reference.locator_fingerprint,
+        episode.episode_identity_hash,
+        episode.metadata_hash,
+        locator_fingerprint,
+        content_sha256,
+        requested_language,
+        selected_language,
+        kind,
+    ]
+    if episode.selection_context is not None:
+        parts.append(episode.selection_context)
+    return _digest(parts)
 
 
 def _podcast_json_document(content: bytes) -> bool:
@@ -552,16 +589,17 @@ def _select_media_enclosure(
             "Selected RSS episode has multiple direct media enclosures; choose an episode with one."
         )
     reference, suffix = next(iter(media_by_url.values()))
-    locator = _digest(
-        [
-            "rss-media-locator-v1",
-            episode.feed_reference.locator_fingerprint,
-            episode.episode_identity_hash,
-            episode.metadata_hash,
-            reference.locator_fingerprint,
-            requested_language,
-        ]
-    )
+    locator_parts: list[str | None] = [
+        "rss-media-locator-v1",
+        episode.feed_reference.locator_fingerprint,
+        episode.episode_identity_hash,
+        episode.metadata_hash,
+        reference.locator_fingerprint,
+        requested_language,
+    ]
+    if episode.selection_context is not None:
+        locator_parts.append(episode.selection_context)
+    locator = _digest(locator_parts)
     return RSSMediaSelection(
         resolved_source=episode.resolved_source,
         request_url=reference.request_url,

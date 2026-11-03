@@ -55,6 +55,7 @@ def _run_source_command(
     source: str,
     *,
     episode: str | None,
+    feed: str | None,
     transcript: str | None,
     provider: str | None,
     language: str | None,
@@ -77,6 +78,7 @@ def _run_source_command(
             result = ingest_source(
                 source,
                 episode=episode,
+                feed=feed,
                 transcript=transcript,
                 provider=provider,
                 language=language,
@@ -122,7 +124,8 @@ def _ingest(
         ...,
         help=(
             "Local transcript, caption, text, or media path; direct HTTP(S) transcript/media URL; "
-            "RSS feed, narrow publisher episode page; or public single-video YouTube URL. "
+            "RSS feed, narrow publisher episode page, public Spotify episode with --feed; "
+            "or public single-video YouTube URL. "
             "Timing may be unavailable."
         ),
     ),
@@ -144,7 +147,18 @@ def _ingest(
     episode: str | None = typer.Option(
         None,
         "--episode",
-        help="Select an RSS episode by exact GUID or full item link.",
+        help=(
+            "Select an RSS episode by exact GUID or full item link; with Spotify, its title "
+            "must also match oEmbed metadata."
+        ),
+    ),
+    feed: str | None = typer.Option(
+        None,
+        "--feed",
+        help=(
+            "Explicit publisher RSS 2.0 feed for a Spotify episode; required unless "
+            "--transcript is supplied."
+        ),
     ),
     json_output: bool = typer.Option(
         False,
@@ -166,6 +180,7 @@ def _ingest(
     _run_source_command(
         source,
         episode=episode,
+        feed=feed,
         transcript=transcript,
         provider=provider,
         language=language,
@@ -211,6 +226,7 @@ def _transcribe(
     _run_source_command(
         source,
         episode=None,
+        feed=None,
         transcript=None,
         provider=provider,
         language=language,

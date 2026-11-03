@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from audigest.errors import SourceResolutionError
-from audigest.sources.rss import looks_like_rss_document, parse_rss_feed
+from audigest.models import SourceInfo
+from audigest.sources.base import ResolvedSource
+from audigest.sources.remote import RemoteURLReference
+from audigest.sources.rss import (
+    RSSFeed,
+    RSSItem,
+    looks_like_rss_document,
+    parse_rss_feed,
+)
+from audigest.sources.rss_acquisition import SelectedRSSEpisode, _resource_fingerprint
+from audigest.storage import cache_id_for
 
 
 def rss_document(items: str = "<item><guid>episode-1</guid></item>") -> bytes:
@@ -77,3 +89,59 @@ def test_rss_parser_enforces_global_episode_count_limit() -> None:
 
     with pytest.raises(SourceResolutionError, match="500 episode limit"):
         parse_rss_feed(payload)
+
+
+def test_rss_fingerprint_and_cache_id_remain_compatible_without_spotify_context() -> None:
+    resolved = ResolvedSource(
+        source_info=SourceInfo(
+            type="rss",
+            uri="https://publisher.example/feed.rss#episode-frozen",
+            title="Frozen episode",
+        ),
+        media_path=Path("rss-episode"),
+        content_sha256="f" * 64,
+    )
+    episode = SelectedRSSEpisode(
+        feed=RSSFeed(title="Feed", language=None, author=None, items=()),
+        item=RSSItem(
+            guid="frozen-guid",
+            link=None,
+            title="Frozen episode",
+            author=None,
+            pub_date=None,
+            transcripts=(),
+            enclosures=(),
+        ),
+        feed_reference=RemoteURLReference(
+            request_url="https://publisher.example/feed.rss",
+            public_url="https://publisher.example/feed.rss",
+            suffix=".rss",
+            locator_fingerprint="a" * 64,
+        ),
+        final_feed_url="https://publisher.example/feed.rss",
+        resolved_source=resolved,
+        episode_identity_hash="b" * 64,
+        metadata_hash="c" * 64,
+        source_identity="f" * 64,
+    )
+
+    fingerprint = _resource_fingerprint(
+        episode,
+        "d" * 64,
+        "e" * 64,
+        requested_language="en",
+        selected_language="fr",
+        kind="rss-transcript",
+    )
+
+    assert fingerprint == "c5d702767331de2968b6ae71dbda2eec9b9826ca160ce0be27ec348eb984ea56"
+    assert (
+        cache_id_for(
+            resolved,
+            provider="rss-text",
+            model=None,
+            language="en",
+            source_fingerprint=fingerprint,
+        )
+        == "7481549525e5d5f43d4f8873fcaae415ee804deb750005275e910b99f138ca7c"
+    )

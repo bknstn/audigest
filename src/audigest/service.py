@@ -51,9 +51,14 @@ from audigest.sources.remote import (
 from audigest.sources.rss import looks_like_rss_document
 from audigest.sources.rss_acquisition import (
     RSSMediaSelection,
+    RSSPreparation,
     RSSTranscriptSelection,
     acquire_rss_episode,
     select_rss_episode,
+)
+from audigest.sources.spotify import (
+    prepare_spotify_episode,
+    spotify_episode_reference,
 )
 from audigest.sources.youtube import (
     get_youtube_metadata,
@@ -417,16 +422,39 @@ def _run_rss_source(
         selected_episode,
         requested_language=config.language,
     )
+    return _run_rss_preparation(
+        preparation,
+        provider=config.provider,
+        language=config.language,
+        no_cache=no_cache,
+        keep_media=keep_media,
+        cache_dir=config.cache_dir,
+        config_file=config_file,
+    )
+
+
+def _run_rss_preparation(
+    preparation: RSSPreparation,
+    *,
+    provider: str,
+    language: str | None,
+    no_cache: bool,
+    keep_media: bool,
+    cache_dir: Path,
+    config_file: Path | str | None,
+) -> TranscriptionResult:
+    """Send an RSS-selected transcript or enclosure through shared processing."""
+
     if isinstance(preparation, RSSTranscriptSelection):
         acquisition = preparation.acquisition
         return _run_resolved_source(
             preparation.resolved_source,
             acquisition=acquisition,
             source_fingerprint=acquisition.source_fingerprint,
-            provider=config.provider,
-            language=config.language,
+            provider=provider,
+            language=language,
             no_cache=no_cache,
-            cache_dir=config.cache_dir,
+            cache_dir=cache_dir,
             config_file=config_file,
             keep_media=keep_media,
         )
@@ -441,14 +469,95 @@ def _run_rss_source(
             downloaded.resolved_source,
             acquisition=None,
             source_fingerprint=downloaded.source_fingerprint,
-            provider=config.provider,
-            language=config.language,
+            provider=provider,
+            language=language,
             no_cache=no_cache,
-            cache_dir=config.cache_dir,
+            cache_dir=cache_dir,
             config_file=config_file,
             keep_media=keep_media,
             temp_media_path=downloaded.resolved_source.media_path,
         )
+
+
+def _spotify_feed_reference(feed: str) -> RemoteURLReference:
+    """Validate an explicit HTTP(S) RSS endpoint without making a request."""
+
+    try:
+        reference = remote_url_reference(feed.strip())
+    except SourceResolutionError:
+        raise ConfigurationError("--feed must be a valid HTTP(S) RSS feed URL") from None
+    if is_spotify_media_url(reference.request_url):
+        raise ConfigurationError("--feed must identify a publisher-hosted RSS feed")
+    return reference
+
+
+def _run_spotify_source(
+    source: str,
+    *,
+    feed: str | None,
+    episode: str | None,
+    transcript: str | None,
+    provider: str | None,
+    language: str | None,
+    no_cache: bool,
+    keep_media: bool,
+    cache_dir: Path | str | None,
+    config_file: Path | str | None,
+) -> TranscriptionResult:
+    """Map a public Spotify episode title to one explicitly supplied RSS item."""
+
+    reference = spotify_episode_reference(source)
+    if episode is not None and not episode.strip():
+        raise ConfigurationError("--episode must contain an exact RSS GUID or item link")
+    if episode is not None and feed is None:
+        raise ConfigurationError("--episode with a Spotify URL requires --feed")
+    feed_reference = _spotify_feed_reference(feed) if feed is not None else None
+
+    if transcript is not None:
+        acquisition = _supplied_transcript(
+            reference.resolved_source,
+            transcript,
+            source_identity=reference.resolved_source.content_sha256,
+        )
+        return _run_resolved_source(
+            reference.resolved_source,
+            acquisition=acquisition,
+            source_fingerprint=acquisition.source_fingerprint,
+            provider=provider,
+            language=language,
+            no_cache=no_cache,
+            cache_dir=cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+        )
+
+    if feed_reference is None:
+        raise ConfigurationError("Spotify ingestion requires an explicit --feed or --transcript")
+
+    config = load_config(
+        provider=provider,
+        language=language,
+        cache_dir=cache_dir,
+        config_file=config_file,
+    )
+    selected_episode = prepare_spotify_episode(
+        reference,
+        feed_reference,
+        selector=episode,
+    )
+    preparation = acquire_rss_episode(
+        selected_episode,
+        requested_language=config.language,
+    )
+    return _run_rss_preparation(
+        preparation,
+        provider=config.provider,
+        language=config.language,
+        no_cache=no_cache,
+        keep_media=keep_media,
+        cache_dir=config.cache_dir,
+        config_file=config_file,
+    )
 
 
 def _run_local_source(
@@ -456,6 +565,7 @@ def _run_local_source(
     *,
     explicit_stt: bool,
     episode: str | None = None,
+    feed: str | None = None,
     transcript: str | None = None,
     provider: str | None = None,
     language: str | None = None,
@@ -476,7 +586,9 @@ def _run_local_source(
         source_type = detect_source(source)
     except ValueError:
         raise SourceResolutionError("Source URL is malformed") from None
-    if episode is not None:
+    if feed is not None and source_type != "spotify":
+        raise ConfigurationError("--feed is valid only with a public Spotify episode URL")
+    if episode is not None and source_type != "spotify":
         if not episode.strip():
             raise ConfigurationError("--episode must contain an exact RSS GUID or item link")
         if source_type not in {"direct", "rss"}:
@@ -500,6 +612,23 @@ def _run_local_source(
             )
         return _run_youtube_source(
             str(source),
+            transcript=transcript,
+            provider=provider,
+            language=language,
+            no_cache=no_cache,
+            keep_media=keep_media,
+            cache_dir=cache_dir,
+            config_file=config_file,
+        )
+    if source_type == "spotify":
+        if explicit_stt:
+            raise SourceResolutionError(
+                "The 'transcribe' command accepts local media only; use 'ingest' for Spotify."
+            )
+        return _run_spotify_source(
+            str(source),
+            feed=feed,
+            episode=episode,
             transcript=transcript,
             provider=provider,
             language=language,
@@ -825,6 +954,7 @@ def ingest(
     source: str | Path,
     *,
     episode: str | None = None,
+    feed: str | None = None,
     transcript: str | None = None,
     provider: str | None = None,
     language: str | None = None,
@@ -839,6 +969,7 @@ def ingest(
         source,
         explicit_stt=False,
         episode=episode,
+        feed=feed,
         transcript=transcript,
         provider=provider,
         language=language,
