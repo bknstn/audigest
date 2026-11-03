@@ -21,15 +21,27 @@ from audigest.errors import (
 )
 from audigest.models import Transcript, TranscriptOrigin
 from audigest.renderers import render_markdown
-from audigest.sources.base import SUPPORTED_MEDIA_EXTENSIONS, ResolvedSource
+from audigest.sources.base import (
+    SUPPORTED_MEDIA_EXTENSIONS,
+    SUPPORTED_TEXT_EXTENSIONS,
+    ResolvedSource,
+)
 from audigest.sources.detect import detect_source
 from audigest.sources.local import LocalFileResolver
+from audigest.sources.publisher_acquisition import (
+    PublisherTranscriptSelection,
+    prepare_publisher_page,
+)
 from audigest.sources.remote import (
+    RemotePageReference,
     RemoteTranscriptInput,
     fetch_remote_caption,
     fetch_remote_media,
     fetch_remote_transcript,
+    is_spotify_media_url,
     remote_media_reference,
+    remote_page_reference,
+    remote_url_reference,
 )
 from audigest.sources.youtube import (
     get_youtube_metadata,
@@ -281,6 +293,58 @@ def _run_resolved_source(
     )
 
 
+def _run_publisher_page(
+    page_reference: RemotePageReference,
+    *,
+    provider: str | None,
+    language: str | None,
+    no_cache: bool,
+    keep_media: bool,
+    cache_dir: Path | str | None,
+    config_file: Path | str | None,
+) -> TranscriptionResult:
+    """Prepare one publisher page, then run its acquired transcript or media."""
+    config = load_config(
+        provider=provider,
+        language=language,
+        cache_dir=cache_dir,
+        config_file=config_file,
+    )
+    preparation = prepare_publisher_page(page_reference, requested_language=config.language)
+    if isinstance(preparation, PublisherTranscriptSelection):
+        acquisition = preparation.acquisition
+        return _run_resolved_source(
+            page_reference.resolved_source,
+            acquisition=acquisition,
+            source_fingerprint=acquisition.source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=no_cache,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+        )
+
+    with fetch_remote_media(
+        preparation.request_url,
+        suffix_override=preparation.suffix,
+        source_info_override=preparation.page_reference.resolved_source.source_info,
+        locator_fingerprint_override=preparation.locator_fingerprint,
+    ) as downloaded:
+        return _run_resolved_source(
+            downloaded.resolved_source,
+            acquisition=None,
+            source_fingerprint=downloaded.source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=no_cache,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+            temp_media_path=downloaded.resolved_source.media_path,
+        )
+
+
 def _run_local_source(
     source: str | Path,
     *,
@@ -328,6 +392,11 @@ def _run_local_source(
                 "transcript URLs."
             )
         source_url = str(source).strip()
+        if is_spotify_media_url(source_url):
+            raise SourceResolutionError(
+                "Spotify player and CDN media URLs are not supported; use a publisher-hosted "
+                "episode URL."
+            )
         try:
             remote_reference = remote_media_reference(source_url)
         except SourceResolutionError:
@@ -364,11 +433,43 @@ def _run_local_source(
                     keep_media=keep_media,
                     temp_media_path=downloaded.resolved_source.media_path,
                 )
-        if transcript is not None:
-            raise SourceResolutionError("--transcript can only be used with an audio/video source")
-        remote = fetch_remote_transcript(source_url)
-        resolved = remote.resolved_source
-        acquisition = LocalTranscriptAcquirer().acquire_remote(remote)
+        url_reference = remote_url_reference(source_url)
+        if url_reference.suffix in SUPPORTED_TEXT_EXTENSIONS:
+            if transcript is not None:
+                raise SourceResolutionError(
+                    "--transcript can only be used with an audio/video or publisher-page source"
+                )
+            remote = fetch_remote_transcript(source_url)
+            resolved = remote.resolved_source
+            acquisition = LocalTranscriptAcquirer().acquire_remote(remote)
+        else:
+            page_reference = remote_page_reference(source_url)
+            if transcript is not None:
+                acquisition = _supplied_transcript(
+                    page_reference.resolved_source,
+                    transcript,
+                    source_identity=page_reference.source_fingerprint,
+                )
+                return _run_resolved_source(
+                    page_reference.resolved_source,
+                    acquisition=acquisition,
+                    source_fingerprint=acquisition.source_fingerprint,
+                    provider=provider,
+                    language=language,
+                    no_cache=no_cache,
+                    cache_dir=cache_dir,
+                    config_file=config_file,
+                    keep_media=keep_media,
+                )
+            return _run_publisher_page(
+                page_reference,
+                provider=provider,
+                language=language,
+                no_cache=no_cache,
+                keep_media=keep_media,
+                cache_dir=cache_dir,
+                config_file=config_file,
+            )
     elif source_type == "local":
         resolved = LocalFileResolver().resolve(source)
         if explicit_stt and resolved.media_path.suffix.lower() not in SUPPORTED_MEDIA_EXTENSIONS:

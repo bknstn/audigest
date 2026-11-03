@@ -43,6 +43,34 @@ class RemoteTranscriptInput:
 
 
 @dataclass(frozen=True, slots=True)
+class BoundedRemoteDocument:
+    """Bounded response bytes and validated final URL, retained only in memory."""
+
+    content: bytes
+    final_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteURLReference:
+    """Validated request/public URL forms and private locator hash for one URL."""
+
+    request_url: str
+    public_url: str
+    suffix: str
+    locator_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RemotePageReference:
+    """Stable public publisher-page source identity without the private locator."""
+
+    request_url: str
+    resolved_source: ResolvedSource
+    locator_fingerprint: str
+    source_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class RemoteMediaInput:
     """Downloaded remote media in a temporary directory and its cache identity."""
 
@@ -94,6 +122,19 @@ def _normalized_http_url(url: str) -> tuple[str, str]:
     return request_url, public_url
 
 
+def is_spotify_media_url(url: str) -> bool:
+    """Identify Spotify player/CDN hosts that must never be used as media sources."""
+
+    try:
+        hostname = (urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in ("spotify.com", "scdn.co", "spotifycdn.com")
+    )
+
+
 class _RedirectResponse(Exception):
     """Internal signal used to process one closed redirect response at a time."""
 
@@ -138,11 +179,14 @@ def _open_redirected_response(
     *,
     deadline: float,
     accept: str,
+    deny_spotify_media: bool = False,
 ) -> tuple[Any, str]:
     """Follow validated redirects manually, closing each redirect without reading it."""
 
     opener = urllib.request.build_opener(_NoAutoRedirectHandler())
     redirect_count = 0
+    if deny_spotify_media and is_spotify_media_url(request_url):
+        raise SourceResolutionError("Spotify player and CDN media are not supported")
     while True:
         remaining_time = deadline - time.monotonic()
         if remaining_time <= 0:
@@ -167,6 +211,10 @@ def _open_redirected_response(
                 request_url, _ = _normalized_http_url(target)
             except SourceResolutionError:
                 raise RetrievalError("Remote redirect target is not allowed") from None
+            if deny_spotify_media and is_spotify_media_url(request_url):
+                raise RetrievalError(
+                    "Remote media redirects to Spotify are not supported"
+                ) from None
             redirect_count += 1
             continue
         except RetrievalError:
@@ -195,10 +243,53 @@ def _check_content_length(response: Any, limit: int, label: str) -> int | None:
     return declared
 
 
+def remote_url_reference(url: str) -> RemoteURLReference:
+    """Normalize an unauthenticated URL and hash its private query-bearing locator."""
+
+    request_url, public_url = _normalized_http_url(url)
+    parsed = urlsplit(request_url)
+    suffix = PurePosixPath(unquote(parsed.path)).suffix.lower()
+    locator_fingerprint = hashlib.sha256(request_url.encode("utf-8")).hexdigest()
+    return RemoteURLReference(
+        request_url=request_url,
+        public_url=public_url,
+        suffix=suffix,
+        locator_fingerprint=locator_fingerprint,
+    )
+
+
+def remote_page_reference(url: str) -> RemotePageReference:
+    """Create stable publisher-page identity without fetching or exposing its locator."""
+
+    reference = remote_url_reference(url)
+    source_fingerprint = hashlib.sha256(
+        json.dumps(
+            ["publisher-page-locator-v1", reference.locator_fingerprint],
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    resolved_source = ResolvedSource(
+        source_info=SourceInfo(type="direct", uri=reference.public_url),
+        media_path=Path("publisher-page.html"),
+        content_sha256=source_fingerprint,
+    )
+    return RemotePageReference(
+        request_url=reference.request_url,
+        resolved_source=resolved_source,
+        locator_fingerprint=reference.locator_fingerprint,
+        source_fingerprint=source_fingerprint,
+    )
+
+
 def remote_media_reference(url: str) -> RemoteMediaReference:
     """Create the public identity of a direct remote media URL without fetching it."""
 
     request_url, public_url = _normalized_http_url(url)
+    if is_spotify_media_url(request_url):
+        raise SourceResolutionError(
+            "Spotify player and CDN media URLs are not supported; use a publisher-hosted "
+            "episode URL."
+        )
     parsed = urlsplit(request_url)
     suffix = PurePosixPath(unquote(parsed.path)).suffix.lower()
     if suffix not in SUPPORTED_MEDIA_EXTENSIONS:
@@ -255,6 +346,7 @@ def fetch_remote_media(
             _normalized_http_url(url)[0],
             deadline=deadline,
             accept="audio/*, video/*, application/octet-stream, */*",
+            deny_spotify_media=True,
         )
         media_path = Path(temp_dir) / f"source{suffix}"
         digest = hashlib.sha256()
@@ -306,10 +398,22 @@ def fetch_remote_media(
         )
 
 
-def _fetch_bounded_remote_bytes(url: str, *, accept: str, limit: int, label: str) -> bytes:
+def fetch_bounded_remote_document(
+    url: str,
+    *,
+    accept: str,
+    limit: int,
+    label: str,
+) -> BoundedRemoteDocument:
+    """Fetch one bounded unauthenticated document and retain its final URL in memory."""
+
     request_url, _ = _normalized_http_url(url)
     deadline = time.monotonic() + TOTAL_REQUEST_TIMEOUT_SECONDS
-    response, _final_url = _open_redirected_response(request_url, deadline=deadline, accept=accept)
+    response, final_url = _open_redirected_response(
+        request_url,
+        deadline=deadline,
+        accept=accept,
+    )
     try:
         with response:
             declared_length = _check_content_length(response, limit, label)
@@ -335,7 +439,13 @@ def _fetch_bounded_remote_bytes(url: str, *, accept: str, limit: int, label: str
         raise
     except Exception:
         raise RetrievalError(f"Remote {label} response could not be read") from None
-    return bytes(content)
+    return BoundedRemoteDocument(content=bytes(content), final_url=final_url)
+
+
+def _fetch_bounded_remote_bytes(url: str, *, accept: str, limit: int, label: str) -> bytes:
+    """Backward-compatible byte-only wrapper for existing direct transcript callers."""
+
+    return fetch_bounded_remote_document(url, accept=accept, limit=limit, label=label).content
 
 
 def fetch_remote_caption(
@@ -421,7 +531,14 @@ __all__ = [
     "MAX_TRANSCRIPT_BYTES",
     "REQUEST_TIMEOUT_SECONDS",
     "TOTAL_REQUEST_TIMEOUT_SECONDS",
+    "BoundedRemoteDocument",
+    "RemotePageReference",
     "RemoteTranscriptInput",
+    "RemoteURLReference",
     "fetch_remote_transcript",
     "fetch_remote_caption",
+    "fetch_bounded_remote_document",
+    "is_spotify_media_url",
+    "remote_page_reference",
+    "remote_url_reference",
 ]

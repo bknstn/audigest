@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), 3 (ElevenLabs STT), 4 (local Whisper), 5 (canonical-only summary processor), 6 (canonical-only project application), and 7 (canonical-only English learning) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255; iteration 4 passed 271; iteration 5 passed 308; iteration 6 passed 394; iteration 7 passed 438, with Ruff, formatting, and mypy checks passing. The North Star MVP is not complete. The current resume point is Iteration 2d, publisher/RSS/Spotify metadata discovery. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), 3 (ElevenLabs STT), 4 (local Whisper), 5 (canonical-only summary processor), 6 (canonical-only project application), 7 (canonical-only English learning), and 2d1 (bounded publisher episode pages) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255; iteration 4 passed 271; iteration 5 passed 308; iteration 6 passed 394; iteration 7 passed 438; iteration 2d1 passed 462, with Ruff, formatting, and mypy checks passing. The North Star MVP is not complete. The next resume point is Iteration 2d2, RSS episode/enclosure discovery; its detailed implementation scope will be selected before coding. Spotify metadata remains a separate later slice. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -82,11 +82,26 @@ The local transcript vertical slice, including the explicit STT-only command, an
 - Validate each quote against its indexed canonical segment and the expression as a substring of that quote; attach optional timing and speaker only from the canonical segment. Preserve untimed source material as untimed. Store separate JSON and Markdown under `outputs/english/<english-id>/`; cache identity covers transcript ID/content/citation metadata, level, provider/model, versions, and generation options.
 - Offline suite: 438 tests passed; Ruff lint/format and mypy passed. Implementation is accepted. Tests use synthetic transcript text and mocked model responses only; no live API calls or credentials.
 
-### Iteration 2d — Publisher, RSS, and Spotify metadata discovery
+### Iteration 2d1 — Bounded publisher episode pages
 
-- Add bounded publisher routes and discover existing publisher-provided transcripts/captions before STT.
-- RSS and Spotify support may resolve public metadata to publisher-hosted enclosures; never download or rip a Spotify stream.
-- Keep ambiguous, malformed, and inaccessible routes actionable without authentication bypass or live test dependencies.
+- For otherwise unrecognized public HTTP(S) episode-page paths, make one bounded request with the existing remote transport: 2 MiB body cap, 15-second socket timeout, 60-second total deadline, at most five manually validated redirects, and no URL userinfo. Use the final validated response URL only in memory for resolving relative resource links.
+- Select only explicit transcript links ending in `.json`, `.txt`, or `.md`, marked inline containers (`id="transcript"` or `transcript` class token), explicitly labeled `.srt`/`.vtt` links, standard caption/subtitle `<track>` elements, and supported media `src` values from `<audio>`, `<video>`, or their nested `<source>` elements. Do not crawl, execute scripts, treat arbitrary page text as transcript, or parse linked HTML documents.
+- Deterministic priority is transcript/canonical links, marked inline text, then caption links/tracks, then exactly one unambiguous direct media locator for the existing STT fallback. Language selection uses requested language, then HTML language, then stable order. A malformed or unsupported selected transcript/caption fails without STT; explicitly labeled unsupported transcript documents require a supplied supported transcript.
+- For text/caption drafts and media fallback, preserve the publisher page as source; use the selected transcript/caption link or page as origin, omitting query/fragment values. Preserve embedded source/origin from canonical JSON. Page and selected transcript bytes are validated before cache lookup; cache identity binds full page locator hash, selected locator/content, language, and acquisition kind. Unrelated page markup does not invalidate an unchanged selected transcript. Reuse existing temporary media, size, cleanup, retention, and STT behavior; never fetch Spotify player/CDN media.
+- Tests use synthetic HTML, documents, redirects, and media with mocked HTTP/provider boundaries only. No live website or paid API access is required.
+- Accepted after parent review; 462 offline tests passed, and Ruff lint/format, mypy, and `git diff --check` passed. All source and provider tests use synthetic data and mocked boundaries only.
+
+### Iteration 2d2 — RSS episode/enclosure discovery (next slice; detailed scope pending)
+
+- Parse explicitly supplied public RSS feeds and select episode metadata and publisher-hosted transcript/caption or media enclosures under bounded retrieval rules.
+- Keep feed selection deterministic; malformed feeds and ambiguous enclosures must fail with actionable errors. Do not crawl unrelated feed or page links.
+- Never infer a Spotify stream from a feed. Synthetic offline tests only.
+
+### Iteration 2d3 — Spotify episode metadata (future slice)
+
+- Resolve public Spotify episode metadata only, then map an unambiguous episode to publisher-hosted RSS metadata or a publisher-hosted enclosure.
+- Never download or rip Spotify player/CDN streams. If mapping is ambiguous or unavailable, report the supported next step and fail.
+- Keep this implementation separate from publisher-page and RSS slices; use synthetic offline tests only.
 
 ### Iteration 8 — Offline acceptance and product documentation
 

@@ -120,7 +120,8 @@ def _ingest(
         ...,
         help=(
             "Local transcript, caption, text, or media path; direct HTTP(S) transcript/media URL; "
-            "or public single-video YouTube URL. Timing may be unavailable."
+            "narrow publisher episode page; or public single-video YouTube URL. "
+            "Timing may be unavailable."
         ),
     ),
     provider: str | None = typer.Option(

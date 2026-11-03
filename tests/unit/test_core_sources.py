@@ -69,15 +69,16 @@ def test_local_resolver_rejects_missing_files_and_directories(tmp_path: Path) ->
         ("https://open.spotify.com/episode/abc", "spotify"),
         ("https://example.test/feed.rss", "rss"),
         ("https://example.test/audio.mp3?download=1", "direct"),
+        ("https://example.test/episode.html", "direct"),
+        ("https://example.test/episode", "direct"),
+        ("https://example.test/download.bin", "direct"),
     ],
 )
 def test_detect_source_classifies_recognized_urls(url: str, expected: str) -> None:
     assert detect_source(url) == expected
 
 
-def test_detect_source_rejects_unknown_url_types_and_schemes() -> None:
-    with pytest.raises(SourceResolutionError, match="Unsupported URL source"):
-        detect_source("https://example.test/article")
+def test_detect_source_rejects_unsupported_schemes_and_malformed_urls() -> None:
     with pytest.raises(SourceResolutionError, match="Unsupported URL scheme"):
         detect_source("ftp://example.test/audio.mp3")
     with pytest.raises(SourceResolutionError, match="Invalid source URL"):

@@ -60,11 +60,9 @@ def detect_source(source: str | Path) -> SourceType:
         return "rss"
     if suffix in SUPPORTED_MEDIA_EXTENSIONS | SUPPORTED_TEXT_EXTENSIONS:
         return "direct"
-    raise SourceResolutionError(
-        "Unsupported URL source. Use a recognized YouTube or Spotify URL, an RSS feed URL, "
-        "a direct audio/video URL or transcript/caption URL with a supported file extension, "
-        "or a local media file."
-    )
+    # Other public HTTP(S) paths may be publisher episode pages. The service
+    # decides whether the bounded HTML surface has usable transcript/media data.
+    return "direct"
 
 
 def is_url_source(source: str | Path) -> bool:
