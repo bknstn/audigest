@@ -16,6 +16,8 @@ from audigest.processors.application import (
     render_application_markdown,
 )
 from audigest.processors.apply_service import apply_to_project
+from audigest.processors.english import render_english_json, render_english_markdown
+from audigest.processors.english_service import english_transcript
 from audigest.processors.service import summarize_transcript
 from audigest.processors.summary import render_summary_json, render_summary_markdown
 from audigest.renderers import render_json, render_markdown
@@ -339,6 +341,65 @@ def _apply(
         typer.echo(render_application_markdown(result.artifact), nl=False)
 
 
+def _english(
+    transcript_id: str = typer.Argument(..., help="ID of a transcript already saved by ingest."),
+    level: str = typer.Option(
+        ...,
+        "--level",
+        help="Requested CEFR level: A1, A2, B1, B2, C1, or C2.",
+    ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help=(
+            "English processor provider; 'auto' only reuses a cached result, "
+            "'openai' can create one."
+        ),
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="OpenAI model name; defaults to AUDIGEST_LLM_MODEL or gpt-6-luna.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Write only the English artifact JSON object to stdout.",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Recompute English-learning output instead of reusing a matching cached result.",
+    ),
+) -> None:
+    """Extract useful English-learning items from a stored canonical transcript."""
+    typer.echo("Loading stored transcript and checking the English result cache...", err=True)
+    try:
+        result = english_transcript(
+            transcript_id,
+            level,
+            provider=provider,
+            model=model,
+            no_cache=no_cache,
+        )
+    except _ERRORS as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=error.exit_code) from None
+
+    typer.echo(
+        "Using cached English result." if result.cached else "English learning complete.",
+        err=True,
+    )
+    typer.echo(
+        f"English JSON: {result.json_path}\nEnglish Markdown: {result.markdown_path}",
+        err=True,
+    )
+    if json_output:
+        typer.echo(render_english_json(result.artifact))
+    else:
+        typer.echo(render_english_markdown(result.artifact), nl=False)
+
+
 app.command(
     name="ingest",
     help="Obtain the best available local transcript; STT is used only as a fallback.",
@@ -355,6 +416,10 @@ app.command(
     name="apply",
     help="Apply transcript ideas to explicitly selected project context without editing it.",
 )(_apply)
+app.command(
+    name="english",
+    help="Extract useful English-learning items from a stored canonical transcript.",
+)(_english)
 app.command(
     name="transcribe",
     help="Explicitly run STT on a supported local media file; transcript sidecars are ignored.",

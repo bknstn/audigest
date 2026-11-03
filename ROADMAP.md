@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), 3 (ElevenLabs STT), 4 (local Whisper), 5 (canonical-only summary processor), and 6 (canonical-only project application) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255; iteration 4 passed 271; iteration 5 passed 308; iteration 6 passed 394, with Ruff, formatting, and mypy checks passing. The North Star MVP is not complete. The current resume point is Iteration 7, canonical-only English learning; Iteration 2d (publisher/RSS/Spotify metadata discovery) remains a separate later iteration. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), 3 (ElevenLabs STT), 4 (local Whisper), 5 (canonical-only summary processor), 6 (canonical-only project application), and 7 (canonical-only English learning) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255; iteration 4 passed 271; iteration 5 passed 308; iteration 6 passed 394; iteration 7 passed 438, with Ruff, formatting, and mypy checks passing. The North Star MVP is not complete. The current resume point is Iteration 2d, publisher/RSS/Spotify metadata discovery. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -76,9 +76,11 @@ The local transcript vertical slice, including the explicit STT-only command, an
 
 ### Iteration 7 — Canonical-only English learning processor
 
-- Add `english` for an already stored transcript ID with an explicit level such as B2.
-- Preserve available source context and timestamps; do not invent timing for untimed transcripts.
-- Test with synthetic transcript text and mocked model responses only.
+- Add `english <transcript-id> --level <CEFR>` for a stored transcript, accepting A1/A2/B1/B2/C1/C2; require the level and prioritize useful B2-to-C1 material for B2.
+- Consume only title and indexed canonical segment text plus requested level under a 256 KiB serialized input cap. Never access the original source, perform language detection, invoke acquisition, or run STT. Reject empty transcript text; allow zero items when no useful English material is present.
+- Use shared LLM provider/model settings, cache-only `auto`, structured OpenAI Responses output with low reasoning effort, no tools/storage/retries, 60-second timeout, and 8,000 output tokens. Return an overview and zero to twelve typed items with exact transcript quotes, verbatim expressions, meanings, usage notes, and one or two separate generated examples.
+- Validate each quote against its indexed canonical segment and the expression as a substring of that quote; attach optional timing and speaker only from the canonical segment. Preserve untimed source material as untimed. Store separate JSON and Markdown under `outputs/english/<english-id>/`; cache identity covers transcript ID/content/citation metadata, level, provider/model, versions, and generation options.
+- Offline suite: 438 tests passed; Ruff lint/format and mypy passed. Implementation is accepted. Tests use synthetic transcript text and mocked model responses only; no live API calls or credentials.
 
 ### Iteration 2d — Publisher, RSS, and Spotify metadata discovery
 

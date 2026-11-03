@@ -33,6 +33,8 @@ transcripts/
 **/outputs/summaries/*/summary.md
 **/outputs/applications/*/application.json
 **/outputs/applications/*/application.md
+**/outputs/english/*/english.json
+**/outputs/english/*/english.md
 *.gguf
 *.safetensors
 *.onnx
