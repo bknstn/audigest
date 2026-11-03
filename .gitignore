@@ -31,6 +31,8 @@ transcripts/
 **/refs/*.json
 **/outputs/summaries/*/summary.json
 **/outputs/summaries/*/summary.md
+**/outputs/applications/*/application.json
+**/outputs/applications/*/application.md
 *.gguf
 *.safetensors
 *.onnx

@@ -2,7 +2,7 @@
 
 ## Status
 
-The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), 3 (ElevenLabs STT), 4 (local Whisper), and 5 (canonical-only summary processor) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255; iteration 4 passed 271; iteration 5 passed 308, with Ruff, formatting, and mypy checks passing. The North Star MVP is not complete. The current resume point is Iteration 6, canonical-only project application; Iteration 7 (English learning) and Iteration 2d (publisher/RSS/Spotify metadata discovery) remain separate later iterations. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
+The local transcript vertical slice, including the explicit STT-only command, and Iterations 2a (direct transcript/caption URLs), 2b (direct media URLs and supplied transcripts), 2c (YouTube captions-first acquisition), 3 (ElevenLabs STT), 4 (local Whisper), 5 (canonical-only summary processor), and 6 (canonical-only project application) are implemented and review-accepted. Iteration 2c passed 231 offline tests; iteration 3 passed 255; iteration 4 passed 271; iteration 5 passed 308; iteration 6 passed 394, with Ruff, formatting, and mypy checks passing. The North Star MVP is not complete. The current resume point is Iteration 7, canonical-only English learning; Iteration 2d (publisher/RSS/Spotify metadata discovery) remains a separate later iteration. The user authorized proceeding through the remaining MVP work as a sequence of small, reviewed iterations. That authorization supersedes earlier blanket deferrals only for the items listed here; it does not authorize unrelated product expansion.
 
 ## Completed checkpoint
 
@@ -52,13 +52,6 @@ The local transcript vertical slice, including the explicit STT-only command, an
 - Request full text without timestamps and normalize it to one untimed segment, retaining returned language when valid.
 - Offline suite: 255 tests passed; all required checks passed. Implementation is accepted. CI uses SDK mocks only; it does not call the paid API.
 
-### Iteration 5 — Canonical-only summary processor
-
-- `summarize <transcript-id>` consumes only the stored canonical transcript; it never resolves, downloads, or retranscribes the source. `auto` is cache-only, while OpenAI generation requires `--provider openai` or `AUDIGEST_LLM_PROVIDER=openai`.
-- Use the OpenAI Responses structured parse boundary with separate LLM provider/model settings, a `gpt-6-luna` default, and a 256 KiB serialized input cap. Return a summary and one to six key points with exact quotes validated against canonical segments; copy timestamps and speakers only from those segments.
-- Store summary JSON and Markdown under `outputs/summaries/<summary-id>/`, independently of canonical transcript files. Validate citations and nonblank summary text again on cache hits; keep generated text and credentials out of version control.
-- Offline suite: 308 tests passed; Ruff lint/format and mypy passed. Implementation is accepted. Tests use synthetic transcripts and mocked providers only; no live API calls or credentials are required.
-
 ### Iteration 4 — Local Whisper STT adapter
 
 - Add an opt-in `local` provider backed by the optional faster-whisper SDK. It accepts only `AUDIGEST_WHISPER_MODEL_DIR`, an existing local CTranslate2 model directory containing `model.bin`, `config.json`, and `tokenizer.json`.
@@ -66,11 +59,20 @@ The local transcript vertical slice, including the explicit STT-only command, an
 - Preserve actual segment timestamps and detected language; reject empty, malformed, or invalidly timed output as a sanitized provider error. Persist only the model directory basename plus backend, not the full local path.
 - Offline tests inject a synthetic SDK/model boundary and do not download weights or call a live service. All 271 offline tests pass; Ruff, formatting, and mypy checks pass. Implementation is accepted.
 
+### Iteration 5 — Canonical-only summary processor
+
+- `summarize <transcript-id>` consumes only the stored canonical transcript; it never resolves, downloads, or retranscribes the source. `auto` is cache-only, while OpenAI generation requires `--provider openai` or `AUDIGEST_LLM_PROVIDER=openai`.
+- Use the OpenAI Responses structured parse boundary with separate LLM provider/model settings, a `gpt-6-luna` default, and a 256 KiB serialized input cap. Return a summary and one to six key points with exact quotes validated against canonical segments; copy timestamps and speakers only from those segments.
+- Store summary JSON and Markdown under `outputs/summaries/<summary-id>/`, independently of canonical transcript files. Validate citations and nonblank summary text again on cache hits; keep generated text and credentials out of version control.
+- Offline suite: 308 tests passed; Ruff lint/format and mypy passed. Implementation is accepted. Tests use synthetic transcripts and mocked providers only; no live API calls or credentials are required.
+
 ### Iteration 6 — Canonical-only project application processor
 
-- Add `apply` for an already stored transcript ID and an explicitly selected project path.
-- Use transcript content plus the requested project context only; do not turn this into general project indexing, RAG, or background processing.
-- Keep generated changes reviewable and avoid modifying project files unless a later task explicitly defines that behavior.
+- `apply <transcript-id> --project <directory>` consumes only a stored canonical transcript and an existing project directory. It never resolves the original source, invokes acquisition or STT, runs project commands, or modifies project files.
+- Read only `README.md` by default. Repeated `--context` selects only explicit project-relative UTF-8 regular files; reject absolute/traversing/hidden/escaping paths, symlinks, non-regular files, missing files, empty/invalid text, more than 16 files, and more than 64 KiB total. Sort selected paths and deduplicate repeats. Keep the configured cache outside the project.
+- `auto` is cache-only; explicit OpenAI uses the shared LLM settings and sends only transcript title/indexed text plus selected filenames/content under a 256 KiB serialized input cap. Return an overview and zero to six recommendations, each grounded by exact transcript and project quotes; copy timestamps/speakers only from canonical segments.
+- Store JSON and Markdown under `outputs/applications/<application-id>/`; cache identity includes canonical citation context, resolved project identity hash, selected filenames/content hashes, provider/model, version, and options. Re-read context and revalidate both evidence sources on cache hits. Tests use synthetic project files/transcripts and mocked providers only.
+- Offline suite: 394 tests passed; Ruff lint/format and mypy passed. Implementation is accepted. No live API calls or credentials are required.
 
 ### Iteration 7 — Canonical-only English learning processor
 

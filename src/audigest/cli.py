@@ -11,6 +11,11 @@ from audigest.errors import (
     SourceResolutionError,
     StorageError,
 )
+from audigest.processors.application import (
+    render_application_json,
+    render_application_markdown,
+)
+from audigest.processors.apply_service import apply_to_project
 from audigest.processors.service import summarize_transcript
 from audigest.processors.summary import render_summary_json, render_summary_markdown
 from audigest.renderers import render_json, render_markdown
@@ -272,6 +277,68 @@ def _summarize(
         typer.echo(render_summary_markdown(result.artifact), nl=False)
 
 
+def _apply(
+    transcript_id: str = typer.Argument(..., help="ID of a transcript already saved by ingest."),
+    project: str = typer.Option(
+        ...,
+        "--project",
+        help="Existing project directory. Audigest reads selected files but never modifies it.",
+    ),
+    context_paths: list[str] | None = typer.Option(  # noqa: B008
+        None,
+        "--context",
+        help=(
+            "Project-relative UTF-8 file to read; repeat to select more files. "
+            "Defaults to README.md."
+        ),
+    ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Application provider; 'auto' only reuses a cached result, 'openai' can create one.",
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="OpenAI model name; defaults to AUDIGEST_LLM_MODEL or gpt-6-luna.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Write only the application artifact JSON object to stdout.",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Recompute recommendations instead of reusing a matching cached result.",
+    ),
+) -> None:
+    """Apply transcript ideas to explicitly selected project context without editing it."""
+    typer.echo("Loading stored transcript and selected project context...", err=True)
+    try:
+        result = apply_to_project(
+            transcript_id,
+            project,
+            context_paths=context_paths,
+            provider=provider,
+            model=model,
+            no_cache=no_cache,
+        )
+    except _ERRORS as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=error.exit_code) from None
+
+    typer.echo("Using cached application." if result.cached else "Application complete.", err=True)
+    typer.echo(
+        f"Application JSON: {result.json_path}\nApplication Markdown: {result.markdown_path}",
+        err=True,
+    )
+    if json_output:
+        typer.echo(render_application_json(result.artifact))
+    else:
+        typer.echo(render_application_markdown(result.artifact), nl=False)
+
+
 app.command(
     name="ingest",
     help="Obtain the best available local transcript; STT is used only as a fallback.",
@@ -284,6 +351,10 @@ app.command(
     name="summarize",
     help="Summarize a canonical transcript already stored in the local cache.",
 )(_summarize)
+app.command(
+    name="apply",
+    help="Apply transcript ideas to explicitly selected project context without editing it.",
+)(_apply)
 app.command(
     name="transcribe",
     help="Explicitly run STT on a supported local media file; transcript sidecars are ignored.",

@@ -26,6 +26,8 @@ Transcript segments may be timed or untimed. For each segment, `start` and `end`
 
 The remaining North Star MVP features explicitly listed in `ROADMAP.md` are authorized for future, individually reviewed iterations; they are not part of the current implementation scope until selected. OpenAI, ElevenLabs, and local Whisper are explicit STT providers after transcript acquisition has been attempted. Keep RAG, embeddings, databases, GUI, background jobs, telemetry, and features outside the roadmap deferred. Do not create placeholder roadmap modules.
 
+`apply <transcript-id> --project <directory>` consumes only the stored canonical transcript and explicitly selected project files; it never resolves the source, invokes acquisition or STT, runs project commands, or modifies project files. If `--context` is omitted, read only `README.md`; otherwise read only the repeated `--context` relative filenames supplied by the user, in sorted order with duplicates removed. Reject unsafe paths, symlinks, non-regular files, empty/invalid UTF-8 files, more than 16 files, more than 64 KiB total, and serialized API input above 256 KiB. `auto` is cache-only; OpenAI requires explicit provider selection and uses the existing `AUDIGEST_LLM_*` settings. Store application JSON and Markdown separately under `outputs/applications/`; artifacts contain only the project basename and selected relative filenames/hashes, never the project root. Keep cache output outside the selected project.
+
 ## Initial structure
 
 Keep modules small and interfaces explicit. The proposed starting layout is:

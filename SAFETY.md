@@ -15,6 +15,8 @@ Audigest reads audio, video, transcripts, captions, and text that may contain pr
 - `show <transcript-id>` reads only an existing canonical transcript from the local cache. It must not inspect the original source, select a provider, invoke acquisition/STT, or modify cache artifacts.
 - Do not add telemetry in the MVP.
 
+`apply <transcript-id> --project <directory>` reads only the stored canonical transcript and the default `README.md` or explicitly named relative UTF-8 files. It does not scan recursively, expand globs, run commands, or modify project files. Reject absolute, traversing, hidden, escaping, symlinked, and non-regular context paths before reading; use no-follow, nonblocking opens and verify regular files. Limit input to 16 files and 64 KiB total, reject empty or invalid UTF-8 context, and cap serialized provider input at 256 KiB. Only an explicit OpenAI selection on a cache miss sends transcript title/segments plus selected relative filenames and file text. Cache paths must resolve outside the project; application artifacts retain only the project basename and selected relative filenames/content hashes, not the project root.
+
 ## Fixtures and test data
 
 - Prefer short fixtures that are fully synthetic and generated for tests, or material whose redistribution permission is documented and clear.

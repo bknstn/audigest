@@ -74,6 +74,24 @@ OpenAI summarization uses the optional `openai` SDK extra and `OPENAI_API_KEY`. 
 
 Human mode writes the rendered Markdown summary to stdout and progress to stderr. With `--json`, stdout contains only the summary JSON object. Processor errors use exit code `6`; missing local SDK errors use `7`. The summary cache contains generated transcript-derived text, so keep it private and out of version control.
 
+## Apply transcript ideas to a project
+
+`apply` consumes a stored canonical transcript and a project directory. It returns reviewable recommendations and never edits the project or runs project commands:
+
+```bash
+uv run audigest apply <transcript-id> --project ~/projects/my-app --provider openai
+uv run audigest apply <transcript-id> --project ~/projects/my-app --json
+uv run audigest apply <transcript-id> --project ~/projects/my-app --context README.md --context docs/architecture.md
+```
+
+Without `--context`, Audigest reads only the project's `README.md`. When the option is present, it reads only those exact relative filenames; it does not scan folders or expand glob patterns. Paths are normalized, sorted, and duplicates are removed, so argument order does not change cache identity. Absolute paths, traversal, hidden components, symlinks, escaping paths, and non-regular files are rejected. Selected files must be non-empty UTF-8 text. The limit is 16 files and 64 KiB total. The selected project must be an existing directory, and the configured cache must be outside it so application output cannot change project files.
+
+The default provider, `auto`, only reuses a valid cached application and fails on a miss without selecting a model or reading an API key. Select `--provider openai` to create recommendations. The provider/model use the same precedence and defaults as `summarize`: CLI options, `AUDIGEST_LLM_PROVIDER` / `AUDIGEST_LLM_MODEL`, then cache-only `auto` / `gpt-6-luna`. `--no-cache` skips lookup but does not select a provider. OpenAI requires the optional SDK extra and `OPENAI_API_KEY`.
+
+OpenAI receives only the transcript title and indexed segment text plus selected relative filenames and their text. The combined serialized input is capped at 256 KiB. The prompt treats transcript and project contents as untrusted data. The structured result contains a concise overview and zero to six recommendations; each recommendation includes an idea, relevance, suggested action, an exact transcript quote, and an exact quote from one selected project file. Audigest verifies both quotes and the selected file path, then copies any timing or speaker only from the canonical transcript segment. If nothing applies, an empty recommendations list is valid.
+
+Application JSON and Markdown are stored separately under `<cache>/outputs/applications/<application-id>/`. Artifacts include only the project basename, selected relative filenames, and content hashes; the full local project root is not stored. Human mode writes Markdown to stdout; `--json` writes only the application JSON there. Missing transcript IDs and selected project files use exit code `3`; unsafe context, configuration, and storage failures use `2`; processor failures use `6`; missing local SDK uses `7`.
+
 Text and Markdown produce one untimed segment containing the entire UTF-8 file content. A UTF-8 BOM is treated as an encoding marker. Caption formats preserve their supplied timestamps. Rendering never invents timestamps for untimed text.
 
 Canonical transcripts include optional `origin` metadata alongside `source`. `source` identifies the content represented by the transcript; `origin` identifies where the transcript text was obtained. Its `kind` is `text`, `captions`, `canonical`, or `stt`; `uri` is required and identifies the acquisition input; `format` is optional. When a canonical JSON transcript is imported, its source metadata, provider, model, language, segments, speakers, timestamps, and existing origin are preserved. If it has no origin, the imported JSON file is recorded as the origin. Audigest assigns a new cache artifact ID and sets `created_at` to the ingestion time.
@@ -149,10 +167,9 @@ The directory must contain `model.bin`, `config.json`, and `tokenizer.json`; inc
 
 The base installation remains usable without the optional faster-whisper SDK. Install the `local` extra only when you want to select this provider. Missing SDK or prepared model files are reported as a local dependency issue.
 
-The `fake` provider can exercise the local fallback path, but does not recognize speech or describe audio. `summarize` is available for stored canonical transcripts. Project application and English-learning processors remain future work:
+The `fake` provider can exercise the local fallback path, but does not recognize speech or describe audio. `summarize` and `apply` are available for stored canonical transcripts. English-learning extraction remains future work:
 
 ```bash
-audigest apply <transcript-id> --project ~/projects/my-app
 audigest english <transcript-id> --level B2
 ```
 
@@ -162,11 +179,11 @@ Configuration precedence is CLI flags, environment variables, optional TOML conf
 | --- | --- |
 | `AUDIGEST_STT_PROVIDER` | Provider for STT; defaults to `auto`, which is cache-only and errors on a cache miss. `ingest` uses it only as fallback; `transcribe` uses it for explicit STT. |
 | `AUDIGEST_LANGUAGE` | Optional transcription language. |
-| `AUDIGEST_LLM_PROVIDER` | Summary provider; defaults to cache-only `auto`. Set to `openai` to create summaries on cache misses. |
-| `AUDIGEST_LLM_MODEL` | OpenAI summary model; defaults to `gpt-6-luna`. |
+| `AUDIGEST_LLM_PROVIDER` | Provider for `summarize` and `apply`; defaults to cache-only `auto`. Set to `openai` to generate processor output on a cache miss. |
+| `AUDIGEST_LLM_MODEL` | OpenAI model for `summarize` and `apply`; defaults to `gpt-6-luna`. |
 | `AUDIGEST_CACHE_DIR` | Override the local cache root. |
 | `AUDIGEST_CONFIG_FILE` | Override the TOML config file path. |
-| `OPENAI_API_KEY` | Optional OpenAI API credential, used only when an explicitly selected OpenAI STT or summary request has a cache miss. |
+| `OPENAI_API_KEY` | Optional OpenAI API credential, used only when an explicitly selected OpenAI STT, summary, or application request has a cache miss. |
 | `ELEVENLABS_API_KEY` | Optional ElevenLabs API credential, used only when the ElevenLabs provider is selected and a cache miss requires STT. |
 | `AUDIGEST_WHISPER_MODEL_DIR` | Local CTranslate2 model directory, used only by an explicitly selected `local` provider after a cache miss. |
 
@@ -188,12 +205,11 @@ The output contract keeps stdout suitable for piping: human-mode progress and di
 | --- | --- |
 | `0` | Success |
 | `2` | Invalid arguments/configuration or local storage failure |
-| `3` | Source resolution failure, including a transcript ID absent from the local cache |
+| `3` | Source resolution failure, including a missing transcript ID or selected project context file |
 | `4` | Remote transcript/caption or media retrieval failure |
 | `5` | STT provider failure |
+| `6` | Transcript processor failure |
 | `7` | Missing local dependency |
-
-Code `6` is reserved for transcript processor failures.
 
 ## Development
 
@@ -209,4 +225,4 @@ Tests and CI are deterministic and do not call paid APIs or require credentials.
 
 ## Roadmap
 
-The planned product normalizes supported sources into one provider-independent transcript format. Direct public YouTube caption acquisition, the required STT providers, and the canonical-only summary processor are available. Automatic publisher discovery, feeds, Spotify metadata routes, project application, and English-learning extraction remain future work. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.
+The planned product normalizes supported sources into one provider-independent transcript format. Direct public YouTube caption acquisition, the required STT providers, canonical-only summary, and read-only project application processors are available. Automatic publisher discovery, feeds, Spotify metadata routes, and English-learning extraction remain future work. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.
