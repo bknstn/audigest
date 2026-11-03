@@ -31,6 +31,12 @@ class ProviderError(AudigestError):
     exit_code = 5
 
 
+class ProcessorError(AudigestError):
+    """A requested transcript processor is unavailable or failed."""
+
+    exit_code = 6
+
+
 class MissingDependencyError(AudigestError):
     """A required local runtime dependency is missing."""
 

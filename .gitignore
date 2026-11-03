@@ -29,6 +29,8 @@ transcripts/
 **/items/*/transcript.json
 **/items/*/transcript.md
 **/refs/*.json
+**/outputs/summaries/*/summary.json
+**/outputs/summaries/*/summary.md
 *.gguf
 *.safetensors
 *.onnx

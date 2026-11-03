@@ -5,11 +5,14 @@ import typer
 from audigest.errors import (
     ConfigurationError,
     MissingDependencyError,
+    ProcessorError,
     ProviderError,
     RetrievalError,
     SourceResolutionError,
     StorageError,
 )
+from audigest.processors.service import summarize_transcript
+from audigest.processors.summary import render_summary_json, render_summary_markdown
 from audigest.renderers import render_json, render_markdown
 from audigest.service import ingest as ingest_source
 from audigest.service import show_transcript
@@ -31,6 +34,7 @@ _ERRORS = (
     ProviderError,
     RetrievalError,
     MissingDependencyError,
+    ProcessorError,
     StorageError,
 )
 
@@ -221,6 +225,53 @@ def _show(
     typer.echo(render_markdown(transcript), nl=False)
 
 
+def _summarize(
+    transcript_id: str = typer.Argument(..., help="ID of a transcript already saved by ingest."),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Summary provider; 'auto' only reuses a cached result, 'openai' can create one.",
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="OpenAI model name; defaults to AUDIGEST_LLM_MODEL or gpt-6-luna.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Write only the summary artifact JSON object to stdout.",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Recompute the summary instead of reusing a matching cached result.",
+    ),
+) -> None:
+    """Summarize a canonical transcript already stored in the local cache."""
+    typer.echo("Loading stored transcript and checking the summary cache...", err=True)
+    try:
+        result = summarize_transcript(
+            transcript_id,
+            provider=provider,
+            model=model,
+            no_cache=no_cache,
+        )
+    except _ERRORS as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=error.exit_code) from None
+
+    typer.echo("Using cached summary." if result.cached else "Summary complete.", err=True)
+    typer.echo(
+        f"Summary JSON: {result.json_path}\nSummary Markdown: {result.markdown_path}",
+        err=True,
+    )
+    if json_output:
+        typer.echo(render_summary_json(result.artifact))
+    else:
+        typer.echo(render_summary_markdown(result.artifact), nl=False)
+
+
 app.command(
     name="ingest",
     help="Obtain the best available local transcript; STT is used only as a fallback.",
@@ -229,6 +280,10 @@ app.command(
     name="show",
     help="Display a transcript already stored in the local cache.",
 )(_show)
+app.command(
+    name="summarize",
+    help="Summarize a canonical transcript already stored in the local cache.",
+)(_summarize)
 app.command(
     name="transcribe",
     help="Explicitly run STT on a supported local media file; transcript sidecars are ignored.",

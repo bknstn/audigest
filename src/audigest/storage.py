@@ -80,6 +80,26 @@ def source_lookup_id_for(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def atomic_write_text(path: Path, content: str) -> None:
+    """Atomically replace a UTF-8 text artifact in its destination directory."""
+
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 class FileTranscriptStore:
     """Store source metadata, canonical JSON, and Markdown under one cache root."""
 
@@ -244,21 +264,13 @@ class FileTranscriptStore:
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
-        temporary_path = Path(temporary_name)
-        try:
-            with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as output:
-                output.write(content)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary_path, path)
-        finally:
-            try:
-                temporary_path.unlink()
-            except FileNotFoundError:
-                pass
+        atomic_write_text(path, content)
 
 
-__all__ = ["FileTranscriptStore", "TranscriptStore", "cache_id_for", "source_lookup_id_for"]
+__all__ = [
+    "FileTranscriptStore",
+    "TranscriptStore",
+    "atomic_write_text",
+    "cache_id_for",
+    "source_lookup_id_for",
+]
