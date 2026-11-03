@@ -68,6 +68,7 @@ def test_local_resolver_rejects_missing_files_and_directories(tmp_path: Path) ->
         ("https://youtu.be/abc", "youtube"),
         ("https://open.spotify.com/episode/abc", "spotify"),
         ("https://example.test/feed.rss", "rss"),
+        ("https://example.test/feed?format=rss", "rss"),
         ("https://example.test/audio.mp3?download=1", "direct"),
         ("https://example.test/episode.html", "direct"),
         ("https://example.test/episode", "direct"),

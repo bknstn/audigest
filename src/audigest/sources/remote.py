@@ -484,8 +484,12 @@ def fetch_remote_caption(
     )
 
 
-def fetch_remote_transcript(url: str) -> RemoteTranscriptInput:
-    """Fetch a bounded direct transcript URL without persisting its locator query."""
+def fetch_remote_transcript(
+    url: str,
+    *,
+    suffix_hint: str | None = None,
+) -> RemoteTranscriptInput:
+    """Fetch a bounded transcript URL, optionally using a declared MIME suffix hint."""
 
     request_url, public_url = _normalized_http_url(url)
     try:
@@ -493,6 +497,12 @@ def fetch_remote_transcript(url: str) -> RemoteTranscriptInput:
         suffix = PurePosixPath(unquote(parsed.path)).suffix.lower()
     except ValueError:
         raise SourceResolutionError("Remote transcript URL is invalid") from None
+    if not suffix and suffix_hint is not None:
+        suffix = suffix_hint.lower()
+        if suffix and not suffix.startswith("."):
+            suffix = f".{suffix}"
+        if suffix not in SUPPORTED_TEXT_EXTENSIONS:
+            raise SourceResolutionError("Selected transcript format is not supported")
     if suffix in SUPPORTED_MEDIA_EXTENSIONS:
         raise SourceResolutionError(
             "Remote media URLs are not supported; provide a local file or a direct remote "
@@ -515,7 +525,7 @@ def fetch_remote_transcript(url: str) -> RemoteTranscriptInput:
     locator_fingerprint = hashlib.sha256(locator_url.encode("utf-8")).hexdigest()
     resolved_source = ResolvedSource(
         source_info=SourceInfo(type="direct", uri=public_url),
-        media_path=Path(PurePosixPath(parsed.path).name),
+        media_path=Path(PurePosixPath(parsed.path).name or f"transcript{suffix}"),
         content_sha256=hashlib.sha256(content).hexdigest(),
     )
     return RemoteTranscriptInput(

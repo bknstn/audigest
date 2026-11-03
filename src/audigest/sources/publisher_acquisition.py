@@ -21,6 +21,7 @@ from audigest.sources.publisher import (
 )
 from audigest.sources.remote import (
     MAX_TRANSCRIPT_BYTES,
+    BoundedRemoteDocument,
     RemotePageReference,
     RemoteTranscriptInput,
     RemoteURLReference,
@@ -298,15 +299,17 @@ def prepare_publisher_page(
     page_reference: RemotePageReference,
     *,
     requested_language: str | None,
+    document: BoundedRemoteDocument | None = None,
 ) -> PublisherPreparation:
     """Fetch one bounded page and select its highest-priority declared source."""
 
-    document = fetch_bounded_remote_document(
-        page_reference.request_url,
-        accept="text/html, application/xhtml+xml, */*",
-        limit=MAX_TRANSCRIPT_BYTES,
-        label="publisher page",
-    )
+    if document is None:
+        document = fetch_bounded_remote_document(
+            page_reference.request_url,
+            accept="text/html, application/xhtml+xml, */*",
+            limit=MAX_TRANSCRIPT_BYTES,
+            label="publisher page",
+        )
     page = parse_publisher_html(document.content)
 
     if page.transcript_links:

@@ -15,6 +15,7 @@ from audigest.acquisition import AcquisitionResult, LocalTranscriptAcquirer
 from audigest.config import load_config
 from audigest.errors import (
     AudigestError,
+    ConfigurationError,
     ProviderError,
     SourceResolutionError,
     StorageError,
@@ -33,8 +34,12 @@ from audigest.sources.publisher_acquisition import (
     prepare_publisher_page,
 )
 from audigest.sources.remote import (
+    MAX_TRANSCRIPT_BYTES,
+    BoundedRemoteDocument,
     RemotePageReference,
     RemoteTranscriptInput,
+    RemoteURLReference,
+    fetch_bounded_remote_document,
     fetch_remote_caption,
     fetch_remote_media,
     fetch_remote_transcript,
@@ -42,6 +47,13 @@ from audigest.sources.remote import (
     remote_media_reference,
     remote_page_reference,
     remote_url_reference,
+)
+from audigest.sources.rss import looks_like_rss_document
+from audigest.sources.rss_acquisition import (
+    RSSMediaSelection,
+    RSSTranscriptSelection,
+    acquire_rss_episode,
+    select_rss_episode,
 )
 from audigest.sources.youtube import (
     get_youtube_metadata,
@@ -296,6 +308,7 @@ def _run_resolved_source(
 def _run_publisher_page(
     page_reference: RemotePageReference,
     *,
+    document: BoundedRemoteDocument | None = None,
     provider: str | None,
     language: str | None,
     no_cache: bool,
@@ -310,7 +323,11 @@ def _run_publisher_page(
         cache_dir=cache_dir,
         config_file=config_file,
     )
-    preparation = prepare_publisher_page(page_reference, requested_language=config.language)
+    preparation = prepare_publisher_page(
+        page_reference,
+        requested_language=config.language,
+        document=document,
+    )
     if isinstance(preparation, PublisherTranscriptSelection):
         acquisition = preparation.acquisition
         return _run_resolved_source(
@@ -345,10 +362,100 @@ def _run_publisher_page(
         )
 
 
+def _run_rss_source(
+    feed_reference: RemoteURLReference,
+    *,
+    document: BoundedRemoteDocument | None,
+    episode: str | None,
+    transcript: str | None,
+    provider: str | None,
+    language: str | None,
+    no_cache: bool,
+    keep_media: bool,
+    cache_dir: Path | str | None,
+    config_file: Path | str | None,
+) -> TranscriptionResult:
+    """Resolve one RSS episode, then use the shared transcript or media pipeline."""
+    config = load_config(
+        provider=provider,
+        language=language,
+        cache_dir=cache_dir,
+        config_file=config_file,
+    )
+    if document is None:
+        document = fetch_bounded_remote_document(
+            feed_reference.request_url,
+            accept="application/rss+xml, application/xml, text/xml, */*",
+            limit=MAX_TRANSCRIPT_BYTES,
+            label="RSS feed",
+        )
+    selected_episode = select_rss_episode(
+        feed_reference,
+        document,
+        selector=episode,
+    )
+
+    if transcript is not None:
+        acquisition = _supplied_transcript(
+            selected_episode.resolved_source,
+            transcript,
+            source_identity=selected_episode.source_identity,
+        )
+        return _run_resolved_source(
+            selected_episode.resolved_source,
+            acquisition=acquisition,
+            source_fingerprint=acquisition.source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=no_cache,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+        )
+
+    preparation = acquire_rss_episode(
+        selected_episode,
+        requested_language=config.language,
+    )
+    if isinstance(preparation, RSSTranscriptSelection):
+        acquisition = preparation.acquisition
+        return _run_resolved_source(
+            preparation.resolved_source,
+            acquisition=acquisition,
+            source_fingerprint=acquisition.source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=no_cache,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+        )
+    assert isinstance(preparation, RSSMediaSelection)
+    with fetch_remote_media(
+        preparation.request_url,
+        suffix_override=preparation.suffix,
+        source_info_override=preparation.resolved_source.source_info,
+        locator_fingerprint_override=preparation.locator_fingerprint,
+    ) as downloaded:
+        return _run_resolved_source(
+            downloaded.resolved_source,
+            acquisition=None,
+            source_fingerprint=downloaded.source_fingerprint,
+            provider=config.provider,
+            language=config.language,
+            no_cache=no_cache,
+            cache_dir=config.cache_dir,
+            config_file=config_file,
+            keep_media=keep_media,
+            temp_media_path=downloaded.resolved_source.media_path,
+        )
+
+
 def _run_local_source(
     source: str | Path,
     *,
     explicit_stt: bool,
+    episode: str | None = None,
     transcript: str | None = None,
     provider: str | None = None,
     language: str | None = None,
@@ -369,6 +476,23 @@ def _run_local_source(
         source_type = detect_source(source)
     except ValueError:
         raise SourceResolutionError("Source URL is malformed") from None
+    if episode is not None:
+        if not episode.strip():
+            raise ConfigurationError("--episode must contain an exact RSS GUID or item link")
+        if source_type not in {"direct", "rss"}:
+            raise ConfigurationError("--episode is valid only with an HTTP(S) RSS feed")
+        try:
+            episode_feed_reference = remote_url_reference(str(source).strip())
+        except SourceResolutionError:
+            raise ConfigurationError("--episode requires an HTTP(S) RSS feed URL") from None
+        if source_type == "direct" and episode_feed_reference.suffix:
+            raise ConfigurationError(
+                "--episode can force RSS parsing only for an extensionless HTTP(S) source"
+            )
+        if source_type == "rss" and episode_feed_reference.suffix in (
+            SUPPORTED_MEDIA_EXTENSIONS | SUPPORTED_TEXT_EXTENSIONS
+        ):
+            raise ConfigurationError("--episode is invalid for direct media or transcript URLs")
     if source_type == "youtube":
         if explicit_stt:
             raise SourceResolutionError(
@@ -385,6 +509,24 @@ def _run_local_source(
             config_file=config_file,
         )
     acquisition: AcquisitionResult | None
+    if source_type == "rss":
+        if explicit_stt:
+            raise SourceResolutionError(
+                "The 'transcribe' command accepts local file media only; use 'ingest' "
+                "for RSS feeds."
+            )
+        return _run_rss_source(
+            remote_url_reference(str(source).strip()),
+            document=None,
+            episode=episode,
+            transcript=transcript,
+            provider=provider,
+            language=language,
+            no_cache=no_cache,
+            keep_media=keep_media,
+            cache_dir=cache_dir,
+            config_file=config_file,
+        )
     if source_type == "direct":
         if explicit_stt:
             raise SourceResolutionError(
@@ -392,6 +534,20 @@ def _run_local_source(
                 "transcript URLs."
             )
         source_url = str(source).strip()
+        url_reference = remote_url_reference(source_url)
+        if episode is not None:
+            return _run_rss_source(
+                url_reference,
+                document=None,
+                episode=episode,
+                transcript=transcript,
+                provider=provider,
+                language=language,
+                no_cache=no_cache,
+                keep_media=keep_media,
+                cache_dir=cache_dir,
+                config_file=config_file,
+            )
         if is_spotify_media_url(source_url):
             raise SourceResolutionError(
                 "Spotify player and CDN media URLs are not supported; use a publisher-hosted "
@@ -433,7 +589,6 @@ def _run_local_source(
                     keep_media=keep_media,
                     temp_media_path=downloaded.resolved_source.media_path,
                 )
-        url_reference = remote_url_reference(source_url)
         if url_reference.suffix in SUPPORTED_TEXT_EXTENSIONS:
             if transcript is not None:
                 raise SourceResolutionError(
@@ -460,6 +615,39 @@ def _run_local_source(
                     cache_dir=cache_dir,
                     config_file=config_file,
                     keep_media=keep_media,
+                )
+            if not url_reference.suffix:
+                document = fetch_bounded_remote_document(
+                    url_reference.request_url,
+                    accept=(
+                        "text/html, application/xhtml+xml, application/rss+xml, "
+                        "application/xml, text/xml, */*"
+                    ),
+                    limit=MAX_TRANSCRIPT_BYTES,
+                    label="publisher page or RSS feed",
+                )
+                if looks_like_rss_document(document.content):
+                    return _run_rss_source(
+                        url_reference,
+                        document=document,
+                        episode=None,
+                        transcript=None,
+                        provider=provider,
+                        language=language,
+                        no_cache=no_cache,
+                        keep_media=keep_media,
+                        cache_dir=cache_dir,
+                        config_file=config_file,
+                    )
+                return _run_publisher_page(
+                    page_reference,
+                    document=document,
+                    provider=provider,
+                    language=language,
+                    no_cache=no_cache,
+                    keep_media=keep_media,
+                    cache_dir=cache_dir,
+                    config_file=config_file,
                 )
             return _run_publisher_page(
                 page_reference,
@@ -636,6 +824,7 @@ def _run_youtube_source(
 def ingest(
     source: str | Path,
     *,
+    episode: str | None = None,
     transcript: str | None = None,
     provider: str | None = None,
     language: str | None = None,
@@ -649,6 +838,7 @@ def ingest(
     return _run_local_source(
         source,
         explicit_stt=False,
+        episode=episode,
         transcript=transcript,
         provider=provider,
         language=language,
