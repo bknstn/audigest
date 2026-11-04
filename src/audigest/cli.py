@@ -2,6 +2,7 @@
 
 import typer
 
+from audigest import __version__
 from audigest.errors import (
     ConfigurationError,
     MissingDependencyError,
@@ -46,9 +47,27 @@ _ERRORS = (
 )
 
 
+def _version_callback(value: bool) -> bool:
+    """Print the installed package version before invoking any command logic."""
+
+    if value:
+        typer.echo(f"audigest {__version__}")
+        raise typer.Exit()
+    return value
+
+
 @app.callback()
-def main() -> None:
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the installed version and exit.",
+    ),
+) -> None:
     """Manage local transcript creation."""
+    _ = version
 
 
 def _run_source_command(

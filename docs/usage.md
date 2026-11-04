@@ -1,0 +1,296 @@
+# Audigest
+
+Run the examples in this guide from the repository root unless a command says otherwise.
+
+Audigest is designed to turn spoken media into reusable transcripts, then apply focused tools to those transcripts from the command line. Transcript acquisition is strategy-first: reuse local transcripts, captions, or text when available, and use STT only as a fallback.
+
+Transcript and caption acquisition is local-first. Audigest accepts canonical transcript JSON, UTF-8 `.txt` and `.md`, `.srt`, and `.vtt` directly, including explicitly supplied HTTP(S) URLs ending in those formats. `ingest` also accepts direct HTTP(S) media URLs, RSS 2.0 feeds, narrow publisher episode pages, public Spotify episode URLs mapped through an explicit publisher RSS feed, and public single-video YouTube watch, `youtu.be`, shorts, and embed URLs. Markdown is a direct input only. For a local media file, it checks adjacent sidecars in deterministic order: `<basename>.transcript.json`, `<basename>.vtt`, `<basename>.srt`, then `<basename>.txt`. An explicit `--transcript` takes priority over those sidecars, publisher-page requests, YouTube and Spotify metadata lookup, cache lookup, and STT; for RSS and Spotify, it also skips declared transcript or media resource requests. It reuses a valid matching cached transcript before attempting STT. If a selected transcript is malformed, Audigest reports the problem and does not silently skip it to invoke STT.
+
+For `ingest`, provider selection applies only after no usable transcript, caption, text, or matching cache is available. `transcribe` is the separate explicit STT-only command for local media. The deterministic `fake` provider is an offline option for exercising STT; it does not recognize speech or describe audio. Explicitly selecting `openai` or `elevenlabs` enables that API for the ingest fallback or explicit transcribe path. Explicitly selecting `local` uses a prepared local faster-whisper model. `auto` never selects an STT provider, even when an API key or local model directory is available.
+
+## Quick start
+
+Requires Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync --all-groups
+uv run audigest --help
+uv run audigest ingest tests/fixtures/sample.wav --provider fake
+uv run audigest transcribe ./episode.mp3 --provider openai
+uv run --extra local audigest transcribe ./episode.mp3 --provider local
+uv run audigest ingest ./episode.mp3 --transcript ./notes.vtt
+uv run audigest ingest https://cdn.example/episode.mp3 --provider fake
+uv run audigest ingest 'https://www.youtube.com/watch?v=VIDEO_ID' --language en
+```
+
+Replace `VIDEO_ID` with the video's actual 11-character ID. Keep the URL quoted in shells such as zsh so `?` is not treated as a filename pattern.
+
+The fixture is a one-second, generated 440 Hz tone, not speech. Its deterministic output is only a smoke-test transcript; it does not represent the sound in the file.
+
+`ingest` is the primary command. Transcript files can be ingested without STT:
+
+```bash
+uv run audigest ingest ./episode.transcript.json
+uv run audigest ingest ./episode.txt
+uv run audigest ingest ./episode.md
+uv run audigest ingest ./episode.vtt
+uv run audigest ingest ./episode.srt
+uv run audigest ingest https://publisher.example/transcript.vtt
+uv run audigest ingest https://publisher.example/episodes/episode-42
+uv run audigest ingest https://publisher.example/feed.rss --episode episode-guid
+uv run audigest ingest https://open.spotify.com/episode/0123456789ABCDEFGHIJKL --feed https://publisher.example/feed.rss
+```
+
+Direct HTTP(S) transcript ingestion supports `.txt`, `.md`, `.json`, `.srt`, and `.vtt` URLs. Direct HTTP(S) audio/video URLs use `ingest` and the selected STT provider when no transcript is supplied. These requests use unauthenticated GETs with a 15-second socket timeout, 60-second total deadline, and at most five validated HTTP(S) redirects. Transcript bodies are limited to 2 MiB; media downloads are streamed to a temporary file and limited to 100 MiB. URL userinfo is rejected. Query and fragment values are omitted from stored source/origin URIs, while a hash of the full locator distinguishes direct URL cache entries.
+
+Publisher episode pages are discovered only when an HTTP(S) source is not a recognized transcript, caption, or media URL. Discovery makes one bounded request to the page, then fetches only a selected transcript/caption document or media URL. It recognizes explicitly labeled transcript links ending in `.json`, `.txt`, or `.md`, marked inline transcript containers (`id="transcript"` or a `transcript` class token), explicitly labeled `.srt`/`.vtt` links, standard captions/subtitles `<track>` elements, and supported media URLs from `<audio>`/`<video>` `src` or nested `<source>` elements. Selection is deterministic: text/canonical links, marked inline text, then captions/tracks, then direct media for the existing STT fallback. A malformed selected source fails without STT; unsupported explicitly labeled transcript links require `--transcript`. The page reader uses the same unauthenticated redirect, timeout, and 2 MiB body limits. It does not crawl links, execute scripts, inspect arbitrary page text, or parse external HTML transcript documents. Spotify player/CDN media is not downloaded.
+
+## RSS 2.0 feeds
+
+Pass an RSS 2.0 feed URL to `ingest`. A single-item feed is selected automatically; a feed with multiple items requires `--episode` with an exact item GUID or full item link. Without `--transcript`, an extensionless URL is fetched once and recognized as RSS from its XML root; `--episode` can force RSS parsing for an extensionless URL. `.rss`, `.xml`, and URLs with `?format=rss` are recognized directly. `--episode` applies to RSS feeds and to a Spotify URL when used with its explicit `--feed`. Atom feeds are not supported.
+
+After selecting an episode, Audigest prefers a declared Podcasting 2.0 transcript over captions and a media enclosure. It supports declared `.txt`, `.md`, canonical `.json`, Podcasting JSON 1.0.0, SRT, VTT, and explicitly declared HTML transcript documents. HTML extraction reads paragraphs from a marked transcript container, otherwise a present `<main>`/`<article>`, otherwise page paragraphs; it ignores scripts, styles, navigation, headers, footers, forms, and `<noscript>`. Ordinary RSS descriptions and arbitrary feed links are never treated as transcripts. Language selection uses the requested language, then channel language, then stable ordering.
+
+Feed documents are limited to 2 MiB and 500 items; selected episodes may declare at most 16 transcript candidates. HTTP GETs use the same 15-second socket timeout, 60-second total deadline, and five validated redirects as other remote sources. Relative resource URLs resolve against the final validated feed URL. Malformed feeds, unsupported declarations, failed selected transcript downloads, and ambiguous media enclosures fail without STT fallback. A media enclosure must identify one supported direct audio/video format, is capped at 100 MiB, and follows existing temporary cleanup and `--keep-media` rules. Spotify player/CDN URLs are rejected, including on redirects.
+
+Podcast JSON start times without end times are stored as untimed segments; Audigest does not invent missing end times. Query values and GUIDs are never written as source identity: cache identities use hashes of the full feed/resource locators and selected episode metadata. The selected episode's declared transcript bytes are checked before cache reuse. For STT fallback, the feed and media are fetched before cache reuse so changed media bytes are detected. This slice does not crawl pages to discover feeds, follow RSS/Atom links, or parse linked transcript HTML outside the explicit RSS transcript declaration.
+
+## Spotify episodes
+
+For a public `open.spotify.com/episode/<22-character-id>` URL, pass the publisher's RSS 2.0 feed explicitly with `--feed`. Audigest fetches Spotify's public oEmbed metadata for the title, then selects exactly one RSS item whose title matches after casefolding and whitespace normalization. If multiple items share the matching title, pass `--episode` with the exact RSS GUID or full item link; the selected item's title must still match. If no feed item title matches, check the explicit feed or provide `--transcript`. Audigest does not discover feeds or inspect Spotify player embeds, thumbnails, or stream/CDN URLs.
+
+```bash
+uv run audigest ingest https://open.spotify.com/episode/0123456789ABCDEFGHIJKL --feed https://publisher.example/feed.rss
+uv run audigest ingest https://open.spotify.com/episode/0123456789ABCDEFGHIJKL --feed https://publisher.example/feed.rss --episode publisher-guid
+uv run audigest ingest https://open.spotify.com/episode/0123456789ABCDEFGHIJKL --transcript ./notes.vtt
+```
+
+A supplied `--transcript` is highest priority and skips oEmbed, feed, and episode-resource requests. `--episode` with a Spotify URL requires `--feed`; with a supplied transcript, both options are syntax-checked but no metadata or feed request is made. The stored source is the stable HTTPS Spotify episode URL; query values are omitted. Selected publisher transcripts and enclosures use the existing RSS format, size, cleanup, and `--keep-media` rules. `transcribe` remains local-media-only. Spotify support makes no authenticated API calls and never downloads Spotify player/CDN media.
+
+YouTube ingestion uses the optional `yt-dlp` extra (`uv sync --extra youtube`). Audigest accepts a single public video URL, reads only selected metadata, and prefers usable manual captions to automatic captions before STT. It chooses a requested language first, then the video's original language, then the first available language in stable alphabetical order; manual captions win when language and format preference are otherwise equal. Caption bytes are fetched again before cache lookup so changed captions invalidate their entry. If no usable captions are available, a matching STT cache entry is checked before audio download. That STT cache key uses the video ID, requested language, and a freshness fingerprint over title/uploader, duration, and upload/release date metadata; signed audio URL tokens do not affect it. As a result, a matching cache hit avoids audio download, while a changed fingerprint causes a new transcription. If the source content changes without a change in those metadata fields, cached STT may be reused.
+
+Metadata extraction is bounded to 60 seconds and 4 MiB of output. Caption and fallback audio retrieval use the same 2 MiB and 100 MiB limits as other remote transcripts and media. Only direct audio-only HTTP(S) formats are eligible; HLS/DASH manifests and implicit conversion are skipped. `yt-dlp` runs without its user configuration, plugins, cookies, cache directories, geo bypass, remote components, or update checks; Audigest does not install JavaScript runtimes or access-recovery tools. Private, age-restricted, live, and upcoming videos are rejected.
+
+When a transcript is supplied for a local or remote media source, `ingest --transcript <file-or-url>` parses it before sidecar/cache/STT handling. For remote media, this avoids fetching the audio/video entirely. A malformed or missing supplied transcript fails without STT fallback. A supplied canonical JSON keeps its embedded source and origin metadata.
+
+For explicit STT on local media, use `transcribe` with a selected provider:
+
+```bash
+uv run audigest transcribe ./episode.mp3 --provider openai --language en
+```
+
+Every successful ingest prints the saved transcript ID. Use it to read the stored transcript later, even if the original source has moved or been removed:
+
+```bash
+uv run audigest show <transcript-id>
+uv run audigest show <transcript-id> --json
+```
+
+`show` reads the existing transcript entry in the configured local cache. It writes Markdown rendered from the stored canonical transcript to stdout by default or the canonical JSON object with `--json`; it does not resolve the original source, run acquisition or STT, or modify cache files. It uses the same cache-root precedence as ingestion, including `AUDIGEST_CACHE_DIR` and the optional TOML `cache_dir` setting.
+
+## Summarize a stored transcript
+
+`summarize` consumes a canonical transcript already saved by `ingest`. It does not resolve the original source, access media, or run STT:
+
+```bash
+uv run audigest summarize <transcript-id> --provider openai
+uv run audigest summarize <transcript-id> --json
+```
+
+The default provider, `auto`, is cache-only: it reuses a valid saved summary and reports a cache miss without contacting a model. Select `--provider openai` to create one. `--no-cache` recomputes the summary, so it can make a new OpenAI request when `openai` is selected. `--model` selects the model; otherwise Audigest uses `AUDIGEST_LLM_MODEL` or `gpt-6-luna`. Provider selection uses `--provider`, then `AUDIGEST_LLM_PROVIDER`, then `auto`. Summary settings use their own environment variables and do not inherit STT provider or language settings.
+
+OpenAI summarization uses the optional `openai` SDK extra and `OPENAI_API_KEY`. Audigest sends only the source title and indexed canonical segment text, limited to 256 KiB of serialized input. The model returns a summary paragraph and one to six key points. Each key point must cite a quote found exactly in its indexed segment; Audigest checks those citations and copies any timestamp or speaker only from the canonical segment. Untimed segments remain untimed. Requests use the fixed OpenAI API endpoint, a 60-second timeout, no retries, no tools, and disabled response storage. Summary results are stored separately under `<cache>/outputs/summaries/<summary-id>/summary.json` and `summary.md`; the canonical transcript remains unchanged.
+
+Human mode writes the rendered Markdown summary to stdout and progress to stderr. With `--json`, stdout contains only the summary JSON object. Processor errors use exit code `6`; missing local SDK errors use `7`. The summary cache contains generated transcript-derived text, so keep it private and out of version control.
+
+## Apply transcript ideas to a project
+
+`apply` consumes a stored canonical transcript and a project directory. It returns reviewable recommendations and never edits the project or runs project commands:
+
+```bash
+uv run audigest apply <transcript-id> --project ~/projects/my-app --provider openai
+uv run audigest apply <transcript-id> --project ~/projects/my-app --json
+uv run audigest apply <transcript-id> --project ~/projects/my-app --context README.md --context docs/architecture.md
+```
+
+Without `--context`, Audigest reads only the project's `README.md`. When the option is present, it reads only those exact relative filenames; it does not scan folders or expand glob patterns. Paths are normalized, sorted, and duplicates are removed, so argument order does not change cache identity. Absolute paths, traversal, hidden components, symlinks, escaping paths, and non-regular files are rejected. Selected files must be non-empty UTF-8 text. The limit is 16 files and 64 KiB total. The selected project must be an existing directory, and the configured cache must be outside it so application output cannot change project files.
+
+The default provider, `auto`, only reuses a valid cached application and fails on a miss without selecting a model or reading an API key. Select `--provider openai` to create recommendations. The provider/model use the same precedence and defaults as `summarize`: CLI options, `AUDIGEST_LLM_PROVIDER` / `AUDIGEST_LLM_MODEL`, then cache-only `auto` / `gpt-6-luna`. `--no-cache` skips lookup but does not select a provider. OpenAI requires the optional SDK extra and `OPENAI_API_KEY`.
+
+OpenAI receives only the transcript title and indexed segment text plus selected relative filenames and their text. The combined serialized input is capped at 256 KiB. The prompt treats transcript and project contents as untrusted data. The structured result contains a concise overview and zero to six recommendations; each recommendation includes an idea, relevance, suggested action, an exact transcript quote, and an exact quote from one selected project file. Audigest verifies both quotes and the selected file path, then copies any timing or speaker only from the canonical transcript segment. If nothing applies, an empty recommendations list is valid.
+
+Application JSON and Markdown are stored separately under `<cache>/outputs/applications/<application-id>/`. Artifacts include only the project basename, selected relative filenames, and content hashes; the full local project root is not stored. Human mode writes Markdown to stdout; `--json` writes only the application JSON there. Missing transcript IDs and selected project files use exit code `3`; unsafe context, configuration, and storage failures use `2`; processor failures use `6`; missing local SDK uses `7`.
+
+## Learn English from a transcript
+
+`english` extracts useful English-learning material from an already stored canonical transcript:
+
+```bash
+uv run audigest english <transcript-id> --level B2
+uv run audigest english <transcript-id> --level C1 --provider openai --json
+```
+
+`--level` is required and accepts CEFR levels A1, A2, B1, B2, C1, or C2. For B2, Audigest prioritizes useful B2-to-C1 material instead of extracting every unfamiliar word. The processor reads only the stored transcript; it never resolves the original source, performs language detection, invokes acquisition, or runs STT. Multilingual or non-English source text is allowed, and a result may contain zero items when no useful English material is present.
+
+The default provider, `auto`, reuses only a matching valid result and fails on a cache miss without selecting a model or reading an API key. Select `--provider openai` to create a result. Provider and model selection use the same precedence and defaults as `summarize` and `apply`: CLI options, `AUDIGEST_LLM_PROVIDER` / `AUDIGEST_LLM_MODEL`, then cache-only `auto` / `gpt-6-luna`. `--no-cache` skips lookup but does not select a provider. OpenAI requires the optional SDK extra and `OPENAI_API_KEY`.
+
+OpenAI receives only the transcript title, requested level, and indexed segment text, with a 256 KiB serialized-input limit. The prompt treats transcript content as untrusted data. It returns an overview and zero to twelve high-value items such as vocabulary, phrases, collocations, phrasal verbs, idioms, constructions, and grammar patterns. Each item has an expression copied from an exact source quote, a meaning, a usage note, and one or two separately generated examples. Audigest verifies the quote and expression against the cited segment, then attaches timing or speaker only from the canonical transcript; untimed segments stay untimed. Requests use the fixed OpenAI endpoint, a 60-second timeout, no retries, no tools, disabled response storage, low reasoning effort, and an 8,000-token output limit.
+
+English JSON and Markdown are stored separately under `<cache>/outputs/english/<english-id>/`. Human mode writes Markdown to stdout; `--json` writes only the English artifact JSON there. Missing transcript IDs use exit code `3`; invalid level/configuration or cache storage failures use `2`; processor failures use `6`; missing local SDK uses `7`.
+
+## Complete transcript-to-output workflow
+
+Install the OpenAI extra and set `OPENAI_API_KEY` before the first processor request. Capture the canonical transcript ID from the JSON-only ingest output, then generate each output once with explicit provider selection:
+
+```bash
+uv sync --all-groups --extra openai
+TRANSCRIPT_ID="$(uv run audigest ingest ./episode.md --json | uv run python -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+uv run audigest show "$TRANSCRIPT_ID"
+uv run audigest summarize "$TRANSCRIPT_ID" --provider openai
+uv run audigest apply "$TRANSCRIPT_ID" --project ~/projects/my-app --provider openai
+uv run audigest english "$TRANSCRIPT_ID" --level B2 --provider openai
+```
+
+The processors write separate results under `outputs/summaries/`, `outputs/applications/`, and `outputs/english/`; they leave the canonical transcript and project files unchanged. After each result is cached, the same requests can be repeated without credentials or model calls:
+
+```bash
+unset OPENAI_API_KEY
+uv run audigest summarize "$TRANSCRIPT_ID" --provider auto
+uv run audigest apply "$TRANSCRIPT_ID" --project ~/projects/my-app --provider auto
+uv run audigest english "$TRANSCRIPT_ID" --level B2 --provider auto
+```
+
+`auto` is cache-only for all three processors. `--no-cache` bypasses lookup but does not choose a provider. Processor cache identity includes the transcript content and citation context; application cache identity also includes the project identity and exact selected filenames/content. Changed inputs require a newly selected provider to regenerate an output.
+
+Text and Markdown produce one untimed segment containing the entire UTF-8 file content. A UTF-8 BOM is treated as an encoding marker. Caption formats preserve their supplied timestamps. Rendering never invents timestamps for untimed text.
+
+Canonical transcripts include optional `origin` metadata alongside `source`. `source` identifies the content represented by the transcript; `origin` identifies where the transcript text was obtained. Its `kind` is `text`, `captions`, `canonical`, or `stt`; `uri` is required and identifies the acquisition input; `format` is optional. When a canonical JSON transcript is imported, its source metadata, provider, model, language, segments, speakers, timestamps, and existing origin are preserved. If it has no origin, the imported JSON file is recorded as the origin. Audigest assigns a new cache artifact ID and sets `created_at` to the ingestion time.
+
+The initial CLI can render machine-readable output with `--json`:
+
+```bash
+uv run audigest ingest tests/fixtures/sample.wav --provider fake --json
+```
+
+In human mode, progress goes to stderr and the final result goes to stdout. In JSON mode, stdout contains JSON only; diagnostics go to stderr.
+
+For `ingest`, `--no-cache` skips cache-pointer lookup but still reads direct or adjacent transcript/text/caption inputs; the acquired result is still stored. For `transcribe`, `--no-cache` skips matching STT cache lookup and runs the selected STT provider again. Both commands use a raw media fingerprint for STT, while `ingest` transcript/caption acquisitions use a separate effective fingerprint that includes the selected sidecar. As a result, `ingest` can reuse a prior STT fallback when no transcript source exists, but a transcript/caption cache cannot satisfy explicit `transcribe`. Changed media or sidecars cannot reuse stale entries. A valid matching STT cache may be reused regardless of the selected fallback provider. The default cache root is the operating system's user cache location for Audigest; `AUDIGEST_CACHE_DIR` overrides that root. The cache uses this layout:
+
+```text
+<audigest-user-cache>/
+  refs/<source-key-hash>.json  # latest pointer for the source fingerprint and language
+  items/<transcript-id>/
+    source.json
+    transcript.json
+    transcript.md
+```
+
+The local-acquisition fingerprint is version `v2` to distinguish artifacts with explicit origin metadata. Existing cache entries for direct or adjacent transcript/text/caption files are rebuilt once from those local files, without STT. Cache identities for media that falls back to STT are unchanged.
+
+The canonical transcript is versioned JSON (`schema_version: "1"`). It contains an `id`; a source record (`type`, `uri`, and optional `title`, `author`, `published_at`, and `duration_seconds`); optional `origin`; `provider`, optional `model` and `language`, and `created_at`; `segments` (`text`, optional `speaker`, and optional `start`/`end`); and full `text` derived from the segments. New readers accept older schema-1 artifacts without `origin`; older strict readers that reject unknown fields may reject new artifacts containing it. Segment timestamps default to `null`; each segment must have both start and end timestamps or neither. Renderers omit timing when it is absent. Provider response objects stay at adapter boundaries.
+
+Local original media is read in place and is never copied or removed. By default, downloaded remote media is deleted after ingestion. `--keep-media` retains successfully downloaded remote media under `<cache>/media/<source-fingerprint>.<extension>` and reports its path; it never applies to local originals or sources that used a supplied transcript without downloading media.
+
+## Command status
+
+`ingest` is transcript-first: a supplied `--transcript` wins first; otherwise it reads direct local transcript/text/caption inputs or fetches an explicitly supplied direct HTTP(S) transcript/caption URL, then checks applicable local sidecars and cache before STT fallback. For a publisher episode page, it reads only marked inline transcripts and explicitly declared transcript/caption elements before considering one unambiguous direct media URL for STT. RSS ingestion requires RSS 2.0 and either one item or an exact `--episode` selector; it reads only the selected episode's declared transcript/caption or one unambiguous media enclosure. Spotify ingestion requires an explicit publisher RSS `--feed`; the Spotify oEmbed title must match exactly one item after casefolding and whitespace normalization, or the user must select an exact `--episode` whose title also matches. A supplied transcript skips Spotify metadata and feed requests. Direct HTTP(S) media, publisher-page media, RSS enclosure media, and mapped Spotify publisher media are downloaded only when needed. Downloaded media is bounded to 100 MiB and stored temporarily during provider processing; `--keep-media` retains it only after successful ingestion.
+
+`transcribe` is an explicit STT-only command for supported local audio/video media. It ignores all transcript sidecars, even malformed ones, and rejects direct JSON, text, Markdown, SRT, and VTT files with a suggestion to use `ingest`. It checks the matching raw-media STT cache before calling the selected provider. Both commands share prior STT work, but acquired transcript/caption cache entries cannot satisfy `transcribe`. This intentionally replaces the previous compatibility-alias behavior; use `ingest` for transcript-first behavior.
+
+`show` accepts a saved transcript ID and the optional `--json` output flag. It renders the stored canonical transcript without using the source file or selecting an STT provider. It does not accept file paths or cache references.
+
+To enable the optional OpenAI SDK and explicitly use its fallback, install the `openai` extra and set an API key in the environment:
+
+```bash
+uv sync --all-groups --extra openai
+export OPENAI_API_KEY="..."
+uv run --extra openai audigest ingest ./episode.mp3 --provider openai --language en
+```
+
+The OpenAI provider uses the [`gpt-transcribe` model](https://developers.openai.com/api/docs/guides/speech-to-text). `ingest` sends audio only after supplied/local/YouTube caption acquisition and cache lookup; `transcribe` sends audio after its matching STT cache lookup. It reads only `OPENAI_API_KEY`, sends requests to the fixed official OpenAI API endpoint, has a 60-second timeout with retries disabled, and never saves the key. This uses the OpenAI API and its account billing; a ChatGPT or Codex subscription is not used or required.
+
+OpenAI accepts `.flac`, `.m4a`, `.mp3`, `.mp4`, `.mpeg`, `.mpga`, `.ogg`, `.wav`, and `.webm` files up to 25 MB. Other local media formats are rejected before upload. Audigest does not convert or split files. It stores the JSON response text as one untimed canonical segment and does not request or infer timestamps. Audigest preserves a single detected language when available and otherwise retains the supplied language hint, if any.
+
+The base installation (`uv sync --all-groups`) remains usable without the optional OpenAI SDK. Install the `openai` extra only when you want to select the OpenAI fallback.
+
+To use ElevenLabs Scribe, install the optional SDK and set an API key in the environment:
+
+```bash
+uv sync --all-groups --extra elevenlabs
+export ELEVENLABS_API_KEY="..."
+uv run --extra elevenlabs audigest transcribe ./episode.mp3 --provider elevenlabs --language en
+```
+
+The ElevenLabs adapter uses the [`scribe_v2` model](https://elevenlabs.io/docs/api-reference/speech-to-text/convert) through the fixed `https://api.elevenlabs.io/v1/speech-to-text` endpoint. It reads only `ELEVENLABS_API_KEY`, uses a 60-second timeout with retries and redirects disabled, and never stores the key. The API accepts common audio/video formats up to 3 GB; unsupported local formats are rejected before upload. Audigest does not convert or split files. It requests no timestamps and stores the returned text as one untimed segment, preserving the response language when supplied and otherwise using the requested language hint. This calls the paid ElevenLabs API when a cache miss requires transcription.
+
+The base installation remains usable without the optional ElevenLabs SDK. Install the `elevenlabs` extra only when you want to select this provider.
+
+To use local faster-whisper, install the optional `local` extra and point `AUDIGEST_WHISPER_MODEL_DIR` to an already prepared CTranslate2 model directory:
+
+```bash
+uv sync --all-groups --extra local
+export AUDIGEST_WHISPER_MODEL_DIR="$PWD/models/faster-whisper-small"
+uv run --extra local audigest transcribe ./episode.mp3 --provider local --language en
+```
+
+The directory must contain `model.bin`, `config.json`, and `tokenizer.json`; including the model's `preprocessor_config.json` is also recommended. Prepare or obtain the CTranslate2 model separately using the [faster-whisper model instructions](https://github.com/SYSTRAN/faster-whisper#model-conversion). Audigest accepts only a local directory, sets `local_files_only=True`, and runs on CPU with int8 computation. It does not download model weights or tokenizer files. This provider reads no API key. It preserves faster-whisper's segment timestamps and detected language, when available; it does not request word timestamps or enable VAD.
+
+The base installation remains usable without the optional faster-whisper SDK. Install the `local` extra only when you want to select this provider. Missing SDK or prepared model files are reported as a local dependency issue.
+
+The `fake` provider can exercise the local fallback path, but does not recognize speech or describe audio. `summarize`, `apply`, and `english` are available for stored canonical transcripts. English-learning requests require an explicit CEFR level, as described above.
+
+Configuration precedence is CLI flags, environment variables, optional TOML config file, then defaults. The config file defaults to the operating system's user configuration location for Audigest (`config.toml`); it accepts top-level `provider`, `language`, and `cache_dir` keys. The current environment variables are:
+
+| Variable | Purpose |
+| --- | --- |
+| `AUDIGEST_STT_PROVIDER` | Provider for STT; defaults to `auto`, which is cache-only and errors on a cache miss. `ingest` uses it only as fallback; `transcribe` uses it for explicit STT. |
+| `AUDIGEST_LANGUAGE` | Optional transcription language. |
+| `AUDIGEST_LLM_PROVIDER` | Provider for `summarize`, `apply`, and `english`; defaults to cache-only `auto`. Set to `openai` to generate processor output on a cache miss. |
+| `AUDIGEST_LLM_MODEL` | OpenAI model for `summarize`, `apply`, and `english`; defaults to `gpt-6-luna`. |
+| `AUDIGEST_CACHE_DIR` | Override the local cache root. |
+| `AUDIGEST_CONFIG_FILE` | Override the TOML config file path. |
+| `OPENAI_API_KEY` | Optional OpenAI API credential, used only when an explicitly selected OpenAI STT, summary, application, or English request has a cache miss. |
+| `ELEVENLABS_API_KEY` | Optional ElevenLabs API credential, used only when the ElevenLabs provider is selected and a cache miss requires STT. |
+| `AUDIGEST_WHISPER_MODEL_DIR` | Local CTranslate2 model directory, used only by an explicitly selected `local` provider after a cache miss. |
+
+Credentials are never accepted in TOML or stored in transcript/cache files. Keep provider API keys in the environment.
+
+Example TOML configuration (no credentials):
+
+```toml
+provider = "auto"
+language = "en"
+cache_dir = "~/.cache/audigest"
+```
+
+## Output and exit codes
+
+The output contract keeps stdout suitable for piping: human-mode progress and diagnostics go to stderr while the final result goes to stdout; `--json` reserves stdout for valid JSON only. Failures use non-zero exit codes:
+
+| Code | Category |
+| --- | --- |
+| `0` | Success |
+| `2` | Invalid arguments/configuration or local storage failure |
+| `3` | Source resolution failure, including a missing transcript ID or selected project context file |
+| `4` | Remote transcript/caption or media retrieval failure |
+| `5` | STT provider failure |
+| `6` | Transcript processor failure |
+| `7` | Missing local dependency |
+
+Common recovery: code `2` points to invalid options, configuration, or storage; correct the named setting or path. Code `3` means source resolution or selection failed; verify the source and transcript ID, and pass an exact `--episode` for a multi-item RSS feed. Code `4` means a bounded remote request failed; check the public source and retry. Code `5` is an STT provider failure; check its API key/account or select another explicit provider. Code `6` is a processor validation/provider failure; review the input and selected project context. Code `7` means the selected optional SDK or local model files are missing; install the provider's documented extra or check `AUDIGEST_WHISPER_MODEL_DIR`.
+
+## Development
+
+```bash
+uv sync --all-groups
+uv run pytest
+uv run ruff check
+uv run ruff format --check
+uv run mypy
+```
+
+Tests and CI are deterministic and do not call paid APIs or require credentials. The synthetic fixture can be regenerated as a one-second, mono, 16 kHz PCM WAV tone.
+
+## Roadmap
+
+Audigest normalizes supported sources into one provider-independent transcript format. Direct public YouTube caption acquisition, bounded publisher-page and RSS 2.0 episode acquisition, explicit Spotify episode-to-RSS mapping, the required STT providers, and the canonical-only summary, project application, and English-learning processors are available. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.

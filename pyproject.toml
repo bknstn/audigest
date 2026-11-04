@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "audigest"
-version = "0.1.0"
-description = "A CLI for reusable, timestamped transcripts of spoken media"
+dynamic = ["version"]
+description = "A CLI for reusable transcripts and focused outputs from spoken media"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -34,6 +34,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audigest"]
+
+[tool.hatch.version]
+path = "src/audigest/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

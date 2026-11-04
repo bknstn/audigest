@@ -103,7 +103,6 @@ wheels = [
 
 [[package]]
 name = "audigest"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "platformdirs" },
@@ -142,7 +141,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "yt-dlp", marker = "extra == 'youtube'", specifier = ">=2025.11.12" },
 ]
-provides-extras = ["openai", "youtube", "elevenlabs", "local"]
+provides-extras = ["elevenlabs", "local", "openai", "youtube"]
 
 [package.metadata.requires-dev]
 dev = [
