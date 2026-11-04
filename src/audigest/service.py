@@ -1012,7 +1012,12 @@ def show_transcript(
 ) -> Transcript:
     """Load an already stored transcript by cache ID without touching its source."""
 
-    config = load_config(cache_dir=cache_dir, config_file=config_file)
+    config = load_config(
+        provider="auto",
+        language="",
+        cache_dir=cache_dir,
+        config_file=config_file,
+    )
     transcript = FileTranscriptStore(config.cache_dir).get(transcript_id)
     if transcript is None:
         raise SourceResolutionError(

@@ -17,10 +17,9 @@ def _host_is(host: str, domain: str) -> bool:
 
 
 def detect_source(source: str | Path) -> SourceType:
-    """Classify local paths and recognized URL forms without resolving remote data.
+    """Classify local paths and recognized URL forms without making network requests.
 
-    URL forms are classified so callers can explain that the adapter is not yet
-    implemented. This function never makes a network request.
+    The selected source adapter validates and resolves remote representations.
     """
 
     raw_source = str(source).strip()

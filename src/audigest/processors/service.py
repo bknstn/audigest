@@ -130,7 +130,8 @@ def summarize_transcript(
 ) -> SummaryResult:
     """Summarize one canonical cache entry without resolving its original source."""
 
-    config = load_config(provider="auto")
+    # Summary processing uses only the cache root; ignore STT language settings.
+    config = load_config(provider="auto", language="")
     transcript = FileTranscriptStore(config.cache_dir).get(transcript_id)
     if transcript is None:
         raise SourceResolutionError(

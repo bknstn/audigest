@@ -1,6 +1,6 @@
 # Safety, privacy, and fixture rules
 
-Audigest reads audio, video, transcripts, captions, and text that may contain private, copyrighted, or otherwise sensitive material. Users are responsible for having the rights and permissions needed to process the files they supply. Keep processing local by default and make any future external provider use explicit.
+Audigest reads audio, video, transcripts, captions, and text that may contain private, copyrighted, or otherwise sensitive material. Users are responsible for having the rights and permissions needed to process the files they supply. Keep processing local by default and require explicit selection before using an external STT or processor provider.
 
 ## Files, media, and caches
 
@@ -24,7 +24,7 @@ Audigest reads audio, video, transcripts, captions, and text that may contain pr
 - Prefer short fixtures that are fully synthetic and generated for tests, or material whose redistribution permission is documented and clear.
 - Synthetic audio may contain generated tones/noise or newly written, non-identifying speech. Synthetic `.txt`, canonical JSON, SRT, and VTT fixtures must be authored for the test and must not reproduce real users' transcripts, private conversations, or copyrighted source material.
 - Do not add a real podcast/video excerpt, downloaded media, user recording, credentials, cookies, provider response containing personal data, or an actual cached transcript to the repository.
-- When testing third-party source adapters in future work, mock their boundary with synthetic metadata/caption payloads; do not make live network requests in normal CI.
+- Test third-party source adapters with synthetic metadata/caption payloads and mocked boundaries; do not make live network requests in CI.
 - Keep fixture content minimal and document the origin and license for any redistributable fixture.
 
 ## Network and source boundaries

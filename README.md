@@ -45,7 +45,7 @@ Publisher episode pages are discovered only when an HTTP(S) source is not a reco
 
 ## RSS 2.0 feeds
 
-Pass an RSS 2.0 feed URL to `ingest`. A single-item feed is selected automatically; a feed with multiple items requires `--episode` with an exact item GUID or full item link. Without `--transcript`, an extensionless URL is fetched once and recognized as RSS from its XML root; `--episode` can force RSS parsing for an extensionless URL. `.rss`, `.xml`, and URLs with `?format=rss` are recognized directly. `--episode` is valid only for RSS feeds. Atom feeds are not supported.
+Pass an RSS 2.0 feed URL to `ingest`. A single-item feed is selected automatically; a feed with multiple items requires `--episode` with an exact item GUID or full item link. Without `--transcript`, an extensionless URL is fetched once and recognized as RSS from its XML root; `--episode` can force RSS parsing for an extensionless URL. `.rss`, `.xml`, and URLs with `?format=rss` are recognized directly. `--episode` applies to RSS feeds and to a Spotify URL when used with its explicit `--feed`. Atom feeds are not supported.
 
 After selecting an episode, Audigest prefers a declared Podcasting 2.0 transcript over captions and a media enclosure. It supports declared `.txt`, `.md`, canonical `.json`, Podcasting JSON 1.0.0, SRT, VTT, and explicitly declared HTML transcript documents. HTML extraction reads paragraphs from a marked transcript container, otherwise a present `<main>`/`<article>`, otherwise page paragraphs; it ignores scripts, styles, navigation, headers, footers, forms, and `<noscript>`. Ordinary RSS descriptions and arbitrary feed links are never treated as transcripts. Language selection uses the requested language, then channel language, then stable ordering.
 
@@ -135,6 +135,30 @@ The default provider, `auto`, reuses only a matching valid result and fails on a
 OpenAI receives only the transcript title, requested level, and indexed segment text, with a 256 KiB serialized-input limit. The prompt treats transcript content as untrusted data. It returns an overview and zero to twelve high-value items such as vocabulary, phrases, collocations, phrasal verbs, idioms, constructions, and grammar patterns. Each item has an expression copied from an exact source quote, a meaning, a usage note, and one or two separately generated examples. Audigest verifies the quote and expression against the cited segment, then attaches timing or speaker only from the canonical transcript; untimed segments stay untimed. Requests use the fixed OpenAI endpoint, a 60-second timeout, no retries, no tools, disabled response storage, low reasoning effort, and an 8,000-token output limit.
 
 English JSON and Markdown are stored separately under `<cache>/outputs/english/<english-id>/`. Human mode writes Markdown to stdout; `--json` writes only the English artifact JSON there. Missing transcript IDs use exit code `3`; invalid level/configuration or cache storage failures use `2`; processor failures use `6`; missing local SDK uses `7`.
+
+## Complete transcript-to-output workflow
+
+Install the OpenAI extra and set `OPENAI_API_KEY` before the first processor request. Capture the canonical transcript ID from the JSON-only ingest output, then generate each output once with explicit provider selection:
+
+```bash
+uv sync --all-groups --extra openai
+TRANSCRIPT_ID="$(uv run audigest ingest ./episode.md --json | uv run python -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+uv run audigest show "$TRANSCRIPT_ID"
+uv run audigest summarize "$TRANSCRIPT_ID" --provider openai
+uv run audigest apply "$TRANSCRIPT_ID" --project ~/projects/my-app --provider openai
+uv run audigest english "$TRANSCRIPT_ID" --level B2 --provider openai
+```
+
+The processors write separate results under `outputs/summaries/`, `outputs/applications/`, and `outputs/english/`; they leave the canonical transcript and project files unchanged. After each result is cached, the same requests can be repeated without credentials or model calls:
+
+```bash
+unset OPENAI_API_KEY
+uv run audigest summarize "$TRANSCRIPT_ID" --provider auto
+uv run audigest apply "$TRANSCRIPT_ID" --project ~/projects/my-app --provider auto
+uv run audigest english "$TRANSCRIPT_ID" --level B2 --provider auto
+```
+
+`auto` is cache-only for all three processors. `--no-cache` bypasses lookup but does not choose a provider. Processor cache identity includes the transcript content and citation context; application cache identity also includes the project identity and exact selected filenames/content. Changed inputs require a newly selected provider to regenerate an output.
 
 Text and Markdown produce one untimed segment containing the entire UTF-8 file content. A UTF-8 BOM is treated as an encoding marker. Caption formats preserve their supplied timestamps. Rendering never invents timestamps for untimed text.
 
@@ -251,6 +275,8 @@ The output contract keeps stdout suitable for piping: human-mode progress and di
 | `6` | Transcript processor failure |
 | `7` | Missing local dependency |
 
+Common recovery: code `2` points to invalid options, configuration, or storage; correct the named setting or path. Code `3` means source resolution or selection failed; verify the source and transcript ID, and pass an exact `--episode` for a multi-item RSS feed. Code `4` means a bounded remote request failed; check the public source and retry. Code `5` is an STT provider failure; check its API key/account or select another explicit provider. Code `6` is a processor validation/provider failure; review the input and selected project context. Code `7` means the selected optional SDK or local model files are missing; install the provider's documented extra or check `AUDIGEST_WHISPER_MODEL_DIR`.
+
 ## Development
 
 ```bash
@@ -265,4 +291,4 @@ Tests and CI are deterministic and do not call paid APIs or require credentials.
 
 ## Roadmap
 
-The planned product normalizes supported sources into one provider-independent transcript format. Direct public YouTube caption acquisition, bounded publisher-page and RSS 2.0 episode acquisition, explicit Spotify episode-to-RSS mapping, the required STT providers, and the canonical-only summary, project application, and English-learning processors are available. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.
+Audigest normalizes supported sources into one provider-independent transcript format. Direct public YouTube caption acquisition, bounded publisher-page and RSS 2.0 episode acquisition, explicit Spotify episode-to-RSS mapping, the required STT providers, and the canonical-only summary, project application, and English-learning processors are available. The MVP does not include RAG, embeddings, a database, a web UI, hosted services, or telemetry. See [NORTH_STAR.md](NORTH_STAR.md) for product direction, [AGENTS.md](AGENTS.md) for implementation scope, and [SAFETY.md](SAFETY.md) for handling rules.

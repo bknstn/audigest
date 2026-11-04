@@ -219,7 +219,7 @@ def _transcribe(
     keep_media: bool = typer.Option(
         False,
         "--keep-media",
-        help="Keep future generated media; local source files are read in place.",
+        help="No media is downloaded by transcribe; this option only affects ingest.",
     ),
 ) -> None:
     """Run STT explicitly on local media without reading transcript sidecars."""
