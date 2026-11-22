@@ -152,15 +152,18 @@ def canonical_key_points(
         if not draft.point.strip() or not draft.quote.strip():
             raise ProcessorError("OpenAI returned a summary point with empty text or evidence.")
         segment_index = draft.segment_index
-        if segment_index >= len(segments):
-            raise ProcessorError("OpenAI returned a citation outside the transcript segment range.")
-        if draft.quote not in segments[segment_index].text:
+        index_in_range = segment_index < len(segments)
+        if not index_in_range or draft.quote not in segments[segment_index].text:
             matches = (
                 [index for index, segment in enumerate(segments) if draft.quote in segment.text]
                 if resolve_unique_quotes
                 else []
             )
             if len(matches) != 1:
+                if not index_in_range:
+                    raise ProcessorError(
+                        "OpenAI returned a citation outside the transcript segment range."
+                    )
                 raise ProcessorError(
                     "OpenAI returned a quote that does not match its cited segment."
                 )

@@ -149,8 +149,19 @@ def test_summarize_removed_source_json_markdown_and_cache_hit(
 
 
 @pytest.mark.parametrize("ambiguous", [False, True])
+@pytest.mark.parametrize(
+    ("reported_index", "expected_error"),
+    [
+        (0, "does not match its cited segment"),
+        (20, "outside the transcript segment range"),
+    ],
+)
 def test_summarize_resolves_only_unique_exact_quotes_at_the_wrong_index(
-    ambiguous: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ambiguous: bool,
+    reported_index: int,
+    expected_error: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     cache_dir = prepare_environment(monkeypatch, tmp_path)
     source = tmp_path / "synthetic.vtt"
@@ -174,7 +185,9 @@ def test_summarize_resolves_only_unique_exact_quotes_at_the_wrong_index(
                 summary="The instrument recorded a steady pulse.",
                 key_points=[
                     SummaryPointDraft(
-                        point="The pulse was steady.", segment_index=0, quote="a steady pulse"
+                        point="The pulse was steady.",
+                        segment_index=reported_index,
+                        quote="a steady pulse",
                     )
                 ],
             )
@@ -187,7 +200,7 @@ def test_summarize_resolves_only_unique_exact_quotes_at_the_wrong_index(
     assert provider.calls == [transcript_id]
     if ambiguous:
         assert result.exit_code == 6
-        assert "does not match its cited segment" in result.stderr
+        assert expected_error in result.stderr
         assert not (cache_dir / "outputs").exists()
         return
 
