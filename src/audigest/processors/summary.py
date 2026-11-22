@@ -139,48 +139,66 @@ def summary_id_for(transcript: Transcript, model: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _canonical_key_point(
+    draft: SummaryPointDraft,
+    segments: list[TranscriptSegment],
+    *,
+    recover_generated_citations: bool,
+) -> SummaryKeyPoint:
+    if not draft.point.strip() or not draft.quote.strip():
+        raise ProcessorError("OpenAI returned a summary point with empty text or evidence.")
+    segment_index = draft.segment_index
+    index_in_range = segment_index < len(segments)
+    if not index_in_range or draft.quote not in segments[segment_index].text:
+        matches = (
+            [index for index, segment in enumerate(segments) if draft.quote in segment.text]
+            if recover_generated_citations
+            else []
+        )
+        if len(matches) != 1:
+            if not index_in_range:
+                raise ProcessorError(
+                    "OpenAI returned a citation outside the transcript segment range."
+                )
+            raise ProcessorError("OpenAI returned a quote that does not match its cited segment.")
+        segment_index = matches[0]
+    segment = segments[segment_index]
+    return SummaryKeyPoint(
+        point=draft.point,
+        citation=SummaryCitation(
+            segment_index=segment_index,
+            quote=draft.quote,
+            start=segment.start,
+            end=segment.end,
+            speaker=segment.speaker,
+        ),
+    )
+
+
 def canonical_key_points(
     response: SummaryResponse,
     segments: list[TranscriptSegment],
     *,
-    resolve_unique_quotes: bool = False,
+    recover_generated_citations: bool = False,
 ) -> list[SummaryKeyPoint]:
-    """Validate quotes and attach timing and speaker from their canonical segments."""
+    """Attach exact citations, allowing partial results only for fresh model output."""
 
     key_points: list[SummaryKeyPoint] = []
+    first_error: ProcessorError | None = None
     for draft in response.key_points:
-        if not draft.point.strip() or not draft.quote.strip():
-            raise ProcessorError("OpenAI returned a summary point with empty text or evidence.")
-        segment_index = draft.segment_index
-        index_in_range = segment_index < len(segments)
-        if not index_in_range or draft.quote not in segments[segment_index].text:
-            matches = (
-                [index for index, segment in enumerate(segments) if draft.quote in segment.text]
-                if resolve_unique_quotes
-                else []
+        try:
+            point = _canonical_key_point(
+                draft, segments, recover_generated_citations=recover_generated_citations
             )
-            if len(matches) != 1:
-                if not index_in_range:
-                    raise ProcessorError(
-                        "OpenAI returned a citation outside the transcript segment range."
-                    )
-                raise ProcessorError(
-                    "OpenAI returned a quote that does not match its cited segment."
-                )
-            segment_index = matches[0]
-        segment = segments[segment_index]
-        key_points.append(
-            SummaryKeyPoint(
-                point=draft.point,
-                citation=SummaryCitation(
-                    segment_index=segment_index,
-                    quote=draft.quote,
-                    start=segment.start,
-                    end=segment.end,
-                    speaker=segment.speaker,
-                ),
-            )
-        )
+        except ProcessorError as error:
+            if not recover_generated_citations:
+                raise
+            if first_error is None:
+                first_error = error
+        else:
+            key_points.append(point)
+    if not key_points and first_error is not None:
+        raise first_error
     return key_points
 
 

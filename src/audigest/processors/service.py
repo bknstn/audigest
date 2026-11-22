@@ -185,7 +185,9 @@ def summarize_transcript(
             raise ProcessorError(
                 "The summary provider returned an invalid structured response."
             ) from None
-    key_points = canonical_key_points(response, transcript.segments, resolve_unique_quotes=True)
+    key_points = canonical_key_points(
+        response, transcript.segments, recover_generated_citations=True
+    )
     summary_sha256 = summary_content_sha256(transcript)
     try:
         artifact = SummaryArtifact(

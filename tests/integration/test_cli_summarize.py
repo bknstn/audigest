@@ -188,7 +188,12 @@ def test_summarize_resolves_only_unique_exact_quotes_at_the_wrong_index(
                         point="The pulse was steady.",
                         segment_index=reported_index,
                         quote="a steady pulse",
-                    )
+                    ),
+                    SummaryPointDraft(
+                        point="This point has no exact source evidence.",
+                        segment_index=1,
+                        quote="no such reading",
+                    ),
                 ],
             )
 
@@ -206,6 +211,7 @@ def test_summarize_resolves_only_unique_exact_quotes_at_the_wrong_index(
 
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
+    assert len(payload["key_points"]) == 1
     citation = payload["key_points"][0]["citation"]
     assert citation == {
         "segment_index": 1,
