@@ -142,23 +142,35 @@ def summary_id_for(transcript: Transcript, model: str) -> str:
 def canonical_key_points(
     response: SummaryResponse,
     segments: list[TranscriptSegment],
+    *,
+    resolve_unique_quotes: bool = False,
 ) -> list[SummaryKeyPoint]:
-    """Validate evidence references and copy timing/speaker from canonical segments."""
+    """Validate quotes and attach timing and speaker from their canonical segments."""
 
     key_points: list[SummaryKeyPoint] = []
     for draft in response.key_points:
         if not draft.point.strip() or not draft.quote.strip():
             raise ProcessorError("OpenAI returned a summary point with empty text or evidence.")
-        if draft.segment_index >= len(segments):
+        segment_index = draft.segment_index
+        if segment_index >= len(segments):
             raise ProcessorError("OpenAI returned a citation outside the transcript segment range.")
-        segment = segments[draft.segment_index]
-        if draft.quote not in segment.text:
-            raise ProcessorError("OpenAI returned a quote that does not match its cited segment.")
+        if draft.quote not in segments[segment_index].text:
+            matches = (
+                [index for index, segment in enumerate(segments) if draft.quote in segment.text]
+                if resolve_unique_quotes
+                else []
+            )
+            if len(matches) != 1:
+                raise ProcessorError(
+                    "OpenAI returned a quote that does not match its cited segment."
+                )
+            segment_index = matches[0]
+        segment = segments[segment_index]
         key_points.append(
             SummaryKeyPoint(
                 point=draft.point,
                 citation=SummaryCitation(
-                    segment_index=draft.segment_index,
+                    segment_index=segment_index,
                     quote=draft.quote,
                     start=segment.start,
                     end=segment.end,

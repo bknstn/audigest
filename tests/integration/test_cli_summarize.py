@@ -148,6 +148,65 @@ def test_summarize_removed_source_json_markdown_and_cache_hit(
     assert human.stdout.startswith("# Summary\n")
 
 
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_summarize_resolves_only_unique_exact_quotes_at_the_wrong_index(
+    ambiguous: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache_dir = prepare_environment(monkeypatch, tmp_path)
+    source = tmp_path / "synthetic.vtt"
+    captions = (
+        "WEBVTT\n\n"
+        "00:00:01.000 --> 00:00:02.000\nNo evidence in this caption.\n\n"
+        "00:00:03.000 --> 00:00:04.000\nThe instrument recorded a steady pulse.\n"
+    )
+    if ambiguous:
+        captions += "\n00:00:05.000 --> 00:00:06.000\nThe log confirmed a steady pulse.\n"
+    source.write_text(captions, encoding="utf-8")
+    runner = CliRunner()
+    ingested = runner.invoke(app, ["ingest", str(source), "--json"])
+    assert ingested.exit_code == 0, ingested.stderr
+    transcript_id = json.loads(ingested.stdout)["id"]
+
+    class WrongIndexProvider(SyntheticSummaryProvider):
+        def summarize(self, transcript: Transcript) -> SummaryResponse:
+            self.calls.append(transcript.id)
+            return SummaryResponse(
+                summary="The instrument recorded a steady pulse.",
+                key_points=[
+                    SummaryPointDraft(
+                        point="The pulse was steady.", segment_index=0, quote="a steady pulse"
+                    )
+                ],
+            )
+
+    provider = WrongIndexProvider("gpt-6-luna")
+    monkeypatch.setattr(
+        "audigest.processors.service.OpenAISummaryProvider", lambda _model: provider
+    )
+    result = runner.invoke(app, ["summarize", transcript_id, "--provider", "openai", "--json"])
+    assert provider.calls == [transcript_id]
+    if ambiguous:
+        assert result.exit_code == 6
+        assert "does not match its cited segment" in result.stderr
+        assert not (cache_dir / "outputs").exists()
+        return
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    citation = payload["key_points"][0]["citation"]
+    assert citation == {
+        "segment_index": 1,
+        "quote": "a steady pulse",
+        "start": 3.0,
+        "end": 4.0,
+        "speaker": None,
+    }
+    cached = runner.invoke(app, ["summarize", transcript_id, "--provider", "auto", "--json"])
+    assert cached.exit_code == 0, cached.stderr
+    assert json.loads(cached.stdout) == payload
+    assert provider.calls == [transcript_id]
+
+
 def test_auto_cache_miss_fails_without_selecting_provider_or_creating_outputs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

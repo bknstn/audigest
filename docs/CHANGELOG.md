@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Recover a summary citation with the wrong segment index when its exact quote occurs in exactly one segment. Use timing and speaker from the matched segment.
+
 ## 0.1.0 — Initial MVP
 
 The first Audigest MVP provides:
