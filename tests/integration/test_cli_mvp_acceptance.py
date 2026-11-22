@@ -48,7 +48,7 @@ class SyntheticResponse:
 
 class SyntheticSummaryProvider:
     name = "openai"
-    model = "gpt-6-luna"
+    model = "gpt-5.4-mini"
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -70,7 +70,7 @@ class SyntheticSummaryProvider:
 
 class SyntheticApplicationProvider:
     name = "openai"
-    model = "gpt-6-luna"
+    model = "gpt-5.4-mini"
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -101,7 +101,7 @@ class SyntheticApplicationProvider:
 
 class SyntheticEnglishProvider:
     name = "openai"
-    model = "gpt-6-luna"
+    model = "gpt-5.4-mini"
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -268,15 +268,15 @@ def test_ingest_show_and_processors_share_canonical_with_keyless_cache_repeats(
     english_provider = SyntheticEnglishProvider()
     monkeypatch.setattr(
         "audigest.processors.service.OpenAISummaryProvider",
-        lambda model: summary_provider if model == "gpt-6-luna" else unexpected(model),
+        lambda model: summary_provider if model == "gpt-5.4-mini" else unexpected(model),
     )
     monkeypatch.setattr(
         "audigest.processors.apply_service.OpenAIApplicationProvider",
-        lambda model: application_provider if model == "gpt-6-luna" else unexpected(model),
+        lambda model: application_provider if model == "gpt-5.4-mini" else unexpected(model),
     )
     monkeypatch.setattr(
         "audigest.processors.english_service.OpenAIEnglishProvider",
-        lambda model: english_provider if model == "gpt-6-luna" else unexpected(model),
+        lambda model: english_provider if model == "gpt-5.4-mini" else unexpected(model),
     )
 
     show_json = runner.invoke(app, ["show", transcript_id, "--json"])

@@ -137,7 +137,7 @@ def test_apply_uses_only_stored_transcript_default_readme_and_keeps_project_read
         for path in (cache / "items" / transcript_id).rglob("*")
         if path.is_file()
     }
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
 
     def unexpected(*_args: object, **_kwargs: object) -> None:
@@ -200,7 +200,7 @@ def test_explicit_context_files_are_deduplicated_sorted_and_never_globbed(
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
     (project / "design.md").write_text("Synthetic design decisions.", encoding="utf-8")
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     runner = CliRunner()
     selected = [
@@ -264,7 +264,7 @@ def test_context_changes_invalidate_cache_but_unselected_files_do_not(
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
     (project / "unselected.md").write_text("First unselected contents.", encoding="utf-8")
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     runner = CliRunner()
     first = runner.invoke(
@@ -293,7 +293,7 @@ def test_context_changes_invalidate_cache_but_unselected_files_do_not(
     assert miss.stdout == ""
     assert "cache-only" in miss.stderr
 
-    replacement = SyntheticApplicationProvider("gpt-6-luna")
+    replacement = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, replacement)
     refreshed = runner.invoke(
         app,
@@ -312,7 +312,7 @@ def test_no_cache_refreshes_only_when_provider_is_explicit(
     prepare_environment(monkeypatch, tmp_path)
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     runner = CliRunner()
     first = runner.invoke(
@@ -366,7 +366,7 @@ def test_unsafe_context_paths_fail_before_provider_call(
     prepare_environment(monkeypatch, tmp_path)
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
 
     result = CliRunner().invoke(
@@ -414,7 +414,7 @@ def test_symlink_and_nonregular_project_context_are_rejected(
     else:
         os.mkfifo(project / "pipe")
         relative = "pipe"
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
 
     result = CliRunner().invoke(
@@ -460,7 +460,7 @@ def test_missing_empty_invalid_utf8_and_oversized_context_categories(
     project = create_project(tmp_path)
     if contents is not None:
         (project / filename).write_bytes(contents)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
 
     result = CliRunner().invoke(
@@ -492,7 +492,7 @@ def test_context_file_count_limit_is_enforced_before_provider_call(
     prepare_environment(monkeypatch, tmp_path)
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     arguments = ["apply", transcript_id, "--project", str(project), "--provider", "openai"]
     for number in range(17):
@@ -512,7 +512,7 @@ def test_missing_project_and_missing_transcript_have_stable_categories(
 ) -> None:
     prepare_environment(monkeypatch, tmp_path)
     transcript_id, _source = create_transcript(tmp_path)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     runner = CliRunner()
 
@@ -547,7 +547,7 @@ def test_no_cache_write_rejects_cache_symlinks_that_point_into_project(
     cache = prepare_environment(monkeypatch, tmp_path)
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     runner = CliRunner()
     initial = runner.invoke(
@@ -599,7 +599,7 @@ def test_cache_read_rejects_symlinked_application_directory(
     cache = prepare_environment(monkeypatch, tmp_path)
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     runner = CliRunner()
     created = runner.invoke(
@@ -637,7 +637,7 @@ def test_cache_location_inside_project_is_rejected_without_writes(
     project = create_project(tmp_path)
     monkeypatch.setenv("AUDIGEST_CACHE_DIR", str(project / "cache"))
     project_before = snapshot_project(project)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
 
     result = CliRunner().invoke(
@@ -671,7 +671,7 @@ def test_cached_application_evidence_is_revalidated_against_current_sources(
     cache = prepare_environment(monkeypatch, tmp_path)
     transcript_id, _source = create_transcript(tmp_path)
     project = create_project(tmp_path)
-    provider = SyntheticApplicationProvider("gpt-6-luna")
+    provider = SyntheticApplicationProvider("gpt-5.4-mini")
     install_provider(monkeypatch, provider)
     runner = CliRunner()
     created = runner.invoke(
@@ -726,7 +726,7 @@ def test_cached_application_evidence_is_revalidated_against_current_sources(
             "cli-model",
         ),
         ([], {"AUDIGEST_LLM_PROVIDER": "openai", "AUDIGEST_LLM_MODEL": "env-model"}, "env-model"),
-        (["--provider", "openai"], {}, "gpt-6-luna"),
+        (["--provider", "openai"], {}, "gpt-5.4-mini"),
     ],
 )
 def test_llm_selection_precedence_and_stt_configuration_independence(
@@ -830,7 +830,7 @@ def test_provider_failures_are_sanitized_and_expected_errors_preserved(
 
     class FailingProvider:
         name = "openai"
-        model = "gpt-6-luna"
+        model = "gpt-5.4-mini"
 
         def apply(self, _transcript: Transcript, _project: Any) -> ApplicationResponse:
             raise failure

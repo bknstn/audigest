@@ -111,7 +111,7 @@ def test_english_uses_removed_canonical_source_json_markdown_and_cache_hit(
     monkeypatch.setattr("audigest.service.LocalFileResolver.resolve", unexpected)
     monkeypatch.setattr("audigest.service.LocalTranscriptAcquirer.acquire", unexpected)
     monkeypatch.setattr("audigest.service.get_provider", unexpected)
-    provider = SyntheticEnglishProvider("gpt-6-luna")
+    provider = SyntheticEnglishProvider("gpt-5.4-mini")
     patch_provider(monkeypatch, provider)
     first = runner.invoke(
         app,
@@ -123,7 +123,7 @@ def test_english_uses_removed_canonical_source_json_markdown_and_cache_hit(
     assert payload["transcript_id"] == transcript_id
     assert payload["level"] == "B2"
     assert payload["provider"] == "openai"
-    assert payload["model"] == "gpt-6-luna"
+    assert payload["model"] == "gpt-5.4-mini"
     assert payload["items"][0]["kind"] == "phrasal_verb"
     assert payload["items"][0]["expression"] == "put off"
     assert payload["items"][0]["citation"]["quote"] == "I put off the decision until Monday."
@@ -190,7 +190,7 @@ def test_level_content_and_timing_change_cache_identity(
     runner = CliRunner()
     transcript_id, source = ingest_vtt(runner, tmp_path)
     source.unlink()
-    provider = SyntheticEnglishProvider("gpt-6-luna")
+    provider = SyntheticEnglishProvider("gpt-5.4-mini")
     patch_provider(monkeypatch, provider)
 
     b2 = runner.invoke(
@@ -233,7 +233,7 @@ def test_no_cache_bypasses_lookup_but_does_not_select_a_provider(
     runner = CliRunner()
     transcript_id, source = ingest_vtt(runner, tmp_path)
     source.unlink()
-    provider = SyntheticEnglishProvider("gpt-6-luna")
+    provider = SyntheticEnglishProvider("gpt-5.4-mini")
     patch_provider(monkeypatch, provider)
     created = runner.invoke(
         app,
@@ -282,7 +282,7 @@ def test_cache_hit_revalidates_english_evidence_against_canonical_segments(
     runner = CliRunner()
     transcript_id, source = ingest_vtt(runner, tmp_path)
     source.unlink()
-    provider = SyntheticEnglishProvider("gpt-6-luna")
+    provider = SyntheticEnglishProvider("gpt-5.4-mini")
     patch_provider(monkeypatch, provider)
     created = runner.invoke(
         app,
@@ -332,7 +332,7 @@ def test_irrelevant_or_multilingual_transcript_can_return_zero_items(
     ingested = runner.invoke(app, ["ingest", str(source), "--json"])
     assert ingested.exit_code == 0, ingested.stderr
     transcript_id = json.loads(ingested.stdout)["id"]
-    provider = SyntheticEnglishProvider("gpt-6-luna")
+    provider = SyntheticEnglishProvider("gpt-5.4-mini")
     patch_provider(monkeypatch, provider)
 
     result = runner.invoke(
@@ -400,7 +400,7 @@ def test_invalid_levels_selections_and_ids_have_stable_error_categories(
             {"AUDIGEST_LLM_PROVIDER": "openai", "AUDIGEST_LLM_MODEL": "env-model"},
             "env-model",
         ),
-        (["--provider", "openai"], {}, "gpt-6-luna"),
+        (["--provider", "openai"], {}, "gpt-5.4-mini"),
     ],
 )
 def test_llm_precedence_is_independent_of_stt_configuration(
@@ -498,7 +498,7 @@ def test_provider_failures_are_sanitized_or_preserved(
 
     class FailingProvider:
         name = "openai"
-        model = "gpt-6-luna"
+        model = "gpt-5.4-mini"
 
         def extract(self, _transcript: Transcript, _level: str) -> EnglishResponse:
             raise failure
@@ -546,7 +546,7 @@ def test_invalid_initial_evidence_does_not_write_outputs_or_change_transcript(
                 ],
             )
 
-    patch_provider(monkeypatch, BadProvider("gpt-6-luna"))
+    patch_provider(monkeypatch, BadProvider("gpt-5.4-mini"))
     result = runner.invoke(
         app,
         ["english", transcript_id, "--level", "B2", "--provider", "openai", "--json"],

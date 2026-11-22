@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +13,6 @@ from pydantic import ValidationError
 from audigest.config import load_config
 from audigest.errors import (
     AudigestError,
-    ConfigurationError,
     ProcessorError,
     SourceResolutionError,
     StorageError,
@@ -22,10 +20,8 @@ from audigest.errors import (
 from audigest.models import Transcript
 from audigest.processors.application import (
     APPLICATION_VERSION,
-    DEFAULT_MODEL,
     MAX_INPUT_BYTES,
     PROMPT_VERSION,
-    PROVIDER,
     ApplicationArtifact,
     ApplicationRecommendationDraft,
     ApplicationResponse,
@@ -38,6 +34,14 @@ from audigest.processors.application import (
     context_metadata,
 )
 from audigest.processors.application_storage import FileApplicationStore
+from audigest.processors.llm import AnthropicProcessorProvider
+from audigest.processors.llm_config import (
+    DEFAULT_MODELS,
+    LLMProviderName,
+    cache_targets,
+    reasoning_effort_for,
+    select_llm,
+)
 from audigest.processors.openai_apply import ApplicationProvider, OpenAIApplicationProvider
 from audigest.processors.project_context import (
     ProjectContext,
@@ -45,10 +49,8 @@ from audigest.processors.project_context import (
     read_project_context,
     resolve_project_root,
 )
-from audigest.processors.summary import MAX_OUTPUT_TOKENS, REASONING_EFFORT
+from audigest.processors.summary import MAX_OUTPUT_TOKENS
 from audigest.storage import FileTranscriptStore
-
-_MODEL_NAME = re.compile(r"[^\s\x00]{1,128}\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,30 +63,13 @@ class ApplicationResult:
     cached: bool
 
 
-def _selection(
-    provider: str | None,
-    model: str | None,
-    environ: Mapping[str, str],
-) -> tuple[str, str]:
-    selected_provider = (
-        provider if provider is not None else environ.get("AUDIGEST_LLM_PROVIDER", "auto")
-    )
-    if selected_provider not in {"auto", PROVIDER}:
-        raise ConfigurationError("LLM provider must be one of: auto, openai")
-    selected_model = (
-        model if model is not None else environ.get("AUDIGEST_LLM_MODEL", DEFAULT_MODEL)
-    )
-    if not isinstance(selected_model, str) or _MODEL_NAME.fullmatch(selected_model) is None:
-        raise ConfigurationError("LLM model must be a non-empty name of at most 128 characters")
-    return selected_provider, selected_model
-
-
 def _check_cached_identity(
     artifact: ApplicationArtifact,
     transcript: Transcript,
     project: ProjectContext,
     *,
     application_id: str,
+    provider: LLMProviderName,
     model: str,
 ) -> None:
     if (
@@ -95,9 +80,9 @@ def _check_cached_identity(
         or artifact.context_files != context_metadata(project)
         or artifact.processor_version != APPLICATION_VERSION
         or artifact.prompt_version != PROMPT_VERSION
-        or artifact.provider != PROVIDER
+        or artifact.provider != provider
         or artifact.model != model
-        or artifact.reasoning_effort != REASONING_EFFORT
+        or artifact.reasoning_effort != reasoning_effort_for(provider)
         or artifact.max_output_tokens != MAX_OUTPUT_TOKENS
     ):
         raise StorageError("Application cache entry does not match the transcript and project")
@@ -166,32 +151,36 @@ def apply_to_project(
 
     # Files are freshly read and validated before application cache lookup.
     selected_project = read_project_context(project_root, context_paths)
-    selected_provider, selected_model = _selection(provider, model, os.environ)
-    application_id = application_id_for(transcript, selected_project, selected_model)
+    selected_provider, requested_model = select_llm(provider, model, os.environ)
     application_store = FileApplicationStore(config.cache_dir)
 
     if not no_cache:
-        cached = application_store.get(application_id)
-        if cached is not None:
-            _check_cached_identity(
-                cached,
-                transcript,
-                selected_project,
-                application_id=application_id,
-                model=selected_model,
+        for cached_provider, cached_model in cache_targets(selected_provider, requested_model):
+            application_id = application_id_for(
+                transcript, selected_project, cached_model, provider=cached_provider
             )
-            entry = application_store.path_for(application_id)
-            return ApplicationResult(
-                artifact=cached,
-                json_path=entry / "application.json",
-                markdown_path=entry / "application.md",
-                cached=True,
-            )
+            cached = application_store.get(application_id)
+            if cached is not None:
+                _check_cached_identity(
+                    cached,
+                    transcript,
+                    selected_project,
+                    application_id=application_id,
+                    provider=cached_provider,
+                    model=cached_model,
+                )
+                entry = application_store.path_for(application_id)
+                return ApplicationResult(
+                    artifact=cached,
+                    json_path=entry / "application.json",
+                    markdown_path=entry / "application.md",
+                    cached=True,
+                )
 
     if selected_provider == "auto":
         raise ProcessorError(
             "No matching cached application was found; provider 'auto' is cache-only. "
-            "Choose --provider openai to create recommendations."
+            "Choose --provider openai or --provider anthropic to create recommendations."
         )
 
     input_json = application_input_json(transcript, selected_project)
@@ -201,12 +190,18 @@ def apply_to_project(
             "(maximum serialized input is 256 KiB)."
         )
 
+    selected_model = requested_model or DEFAULT_MODELS[selected_provider]
+    application_id = application_id_for(
+        transcript, selected_project, selected_model, provider=selected_provider
+    )
     try:
-        if provider_factory is None:
-            selected: ApplicationProvider = OpenAIApplicationProvider(selected_model)
-        else:
-            selected = provider_factory(selected_model)
-        if selected.name != PROVIDER or selected.model != selected_model:
+        factory = provider_factory or (
+            OpenAIApplicationProvider
+            if selected_provider == "openai"
+            else AnthropicProcessorProvider
+        )
+        selected = factory(selected_model)
+        if selected.name != selected_provider or selected.model != selected_model:
             raise ProcessorError(
                 "The selected application provider returned inconsistent provenance."
             )
@@ -237,9 +232,9 @@ def apply_to_project(
             context_files=context_metadata(selected_project),
             processor_version=APPLICATION_VERSION,
             prompt_version=PROMPT_VERSION,
-            provider=PROVIDER,
+            provider=selected_provider,
             model=selected_model,
-            reasoning_effort=REASONING_EFFORT,
+            reasoning_effort=reasoning_effort_for(selected_provider),
             max_output_tokens=MAX_OUTPUT_TOKENS,
             created_at=datetime.now(UTC),
             overview=response.overview,

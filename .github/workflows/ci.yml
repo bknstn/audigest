@@ -19,7 +19,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Install locked dependencies
-        run: uv sync --frozen --all-groups --extra openai --extra youtube --extra elevenlabs --extra local
+        run: uv sync --frozen --all-groups --all-extras
       - name: Run tests
         run: uv run pytest
       - name: Lint
@@ -28,3 +28,5 @@ jobs:
         run: uv run ruff format --check
       - name: Type check
         run: uv run mypy
+      - name: Build Agensi skill ZIP
+        run: uv run --no-sync python scripts/build_agensi_skill.py

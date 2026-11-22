@@ -96,7 +96,7 @@ def test_request_uses_bounded_structured_responses_without_project_root(
         "max_retries": 0,
     }
     assert responses.request is not None
-    assert responses.request["model"] == "gpt-6-luna"
+    assert responses.request["model"] == "gpt-5.4-mini"
     assert responses.request["text_format"] is ApplicationResponse
     assert responses.request["reasoning"] == {"effort": REASONING_EFFORT}
     assert responses.request["max_output_tokens"] == MAX_OUTPUT_TOKENS == 6000

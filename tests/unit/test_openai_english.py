@@ -100,7 +100,7 @@ def test_openai_request_uses_fixed_structured_options_and_only_public_input(
     }
     assert responses.request is not None
     request = responses.request
-    assert request["model"] == "gpt-6-luna"
+    assert request["model"] == "gpt-5.4-mini"
     assert request["store"] is False
     assert request["max_output_tokens"] == MAX_OUTPUT_TOKENS == 8000
     assert request["reasoning"] == {"effort": REASONING_EFFORT} == {"effort": "low"}

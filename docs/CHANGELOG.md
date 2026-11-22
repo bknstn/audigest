@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+- Add Anthropic Claude as an optional backend for summary, project application, and English-learning processors. Both providers use native structured output and shared local evidence validation.
+- Use provider-specific model defaults for new work and retain compatibility with saved OpenAI artifacts, including the historical `gpt-6-luna` default.
+- Add an Audigest Agent Skill and a reproducible Agensi upload ZIP builder.
+
 ## 0.1.1
 
 - Recover a summary citation with the wrong segment index when its exact quote occurs in exactly one segment. Use timing and speaker from the matched segment.

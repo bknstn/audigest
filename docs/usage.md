@@ -88,18 +88,31 @@ uv run audigest show <transcript-id> --json
 
 `show` reads the existing transcript entry in the configured local cache. It writes Markdown rendered from the stored canonical transcript to stdout by default or the canonical JSON object with `--json`; it does not resolve the original source, run acquisition or STT, or modify cache files. It uses the same cache-root precedence as ingestion, including `AUDIGEST_CACHE_DIR` and the optional TOML `cache_dir` setting.
 
+## Configure a processor backend
+
+`summarize`, `apply`, and `english` share LLM settings. For each option, Audigest checks the CLI flag, then its environment variable, then its default. Set `--provider` or `AUDIGEST_LLM_PROVIDER` to `auto`, `openai`, or `anthropic`. Use `--model` or `AUDIGEST_LLM_MODEL` for a provider-compatible model ID. These settings are independent of STT settings and the host agent's model selection.
+
+| Provider | Optional extra | Credential | Model for generation when omitted |
+| --- | --- | --- | --- |
+| `openai` | `openai` | `OPENAI_API_KEY` | [gpt-5.4-mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini) |
+| `anthropic` | `anthropic` | `ANTHROPIC_API_KEY` | [claude-haiku-5-5](https://platform.claude.com/docs/en/models/haiku-5-5/overview) |
+
+Both backends have offline SDK tests. Live API smoke tests are pending. OpenAI models must support strict Responses structured output and low reasoning effort. Anthropic models must support Messages JSON structured output. Audigest validates both responses against the same strict Pydantic models and checks evidence locally. Requests use the official provider endpoints, a 60-second timeout, no retries, no tools, and a 256 KiB serialized input cap. OpenAI requests set `store=False`. For Anthropic, review its [data-handling terms](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#data-handling) before sending sensitive text.
+
+`auto` is the default and only looks in the local cache. A cache hit needs no SDK or API key. Without a model override, `auto` checks the OpenAI default, the historical OpenAI `gpt-6-luna` cache, then the Anthropic default. With a model override, it checks that exact model under OpenAI then Anthropic. An explicit provider checks only its own cache keys. When OpenAI is selected with no model override it can also reuse historical `gpt-6-luna` results. A new default OpenAI request uses `gpt-5.4-mini`. Existing cache IDs and artifact provenance are preserved. `--no-cache` skips lookup. It can generate a new request only with a selected backend.
+
+For configuration errors, check provider spelling or model syntax. Missing optional SDKs use exit code 7. Cache misses, keys, unavailable models, rate limits, and invalid structured responses report distinct processor diagnostics with exit code 6.
+
 ## Summarize a stored transcript
 
 `summarize` consumes a canonical transcript already saved by `ingest`. It does not resolve the original source, access media, or run STT:
 
 ```bash
 uv run audigest summarize <transcript-id> --provider openai
-uv run audigest summarize <transcript-id> --json
+uv run audigest summarize <transcript-id> --provider auto --json
 ```
 
-The default provider, `auto`, is cache-only: it reuses a valid saved summary and reports a cache miss without contacting a model. Select `--provider openai` to create one. `--no-cache` recomputes the summary, so it can make a new OpenAI request when `openai` is selected. `--model` selects the model; otherwise Audigest uses `AUDIGEST_LLM_MODEL` or `gpt-6-luna`. Provider selection uses `--provider`, then `AUDIGEST_LLM_PROVIDER`, then `auto`. Summary settings use their own environment variables and do not inherit STT provider or language settings.
-
-OpenAI summarization uses the optional `openai` SDK extra and `OPENAI_API_KEY`. Audigest sends only the source title and indexed canonical segment text, limited to 256 KiB of serialized input. The model returns a summary paragraph and one to six key points. Each key point must cite a quote found exactly in its indexed segment; Audigest checks those citations and copies any timestamp or speaker only from the canonical segment. Untimed segments remain untimed. Requests use the fixed OpenAI API endpoint, a 60-second timeout, no retries, no tools, and disabled response storage. Summary results are stored separately under `<cache>/outputs/summaries/<summary-id>/summary.json` and `summary.md`; the canonical transcript remains unchanged.
+The selected model receives only the source title and indexed canonical segment text. It returns a summary paragraph and up to six key points. Audigest requires an exact source quote for each retained point and copies any timestamp or speaker from the canonical segment. Untimed segments stay untimed. Summary results are stored separately under `<cache>/outputs/summaries/<summary-id>/summary.json` and `summary.md`.
 
 Human mode writes the rendered Markdown summary to stdout and progress to stderr. With `--json`, stdout contains only the summary JSON object. Processor errors use exit code `6`; missing local SDK errors use `7`. The summary cache contains generated transcript-derived text, so keep it private and out of version control.
 
@@ -109,15 +122,13 @@ Human mode writes the rendered Markdown summary to stdout and progress to stderr
 
 ```bash
 uv run audigest apply <transcript-id> --project ~/projects/my-app --provider openai
-uv run audigest apply <transcript-id> --project ~/projects/my-app --json
+uv run audigest apply <transcript-id> --project ~/projects/my-app --provider auto --json
 uv run audigest apply <transcript-id> --project ~/projects/my-app --context README.md --context docs/architecture.md
 ```
 
 Without `--context`, Audigest reads only the project's `README.md`. When the option is present, it reads only those exact relative filenames; it does not scan folders or expand glob patterns. Paths are normalized, sorted, and duplicates are removed, so argument order does not change cache identity. Absolute paths, traversal, hidden components, symlinks, escaping paths, and non-regular files are rejected. Selected files must be non-empty UTF-8 text. The limit is 16 files and 64 KiB total. The selected project must be an existing directory, and the configured cache must be outside it so application output cannot change project files.
 
-The default provider, `auto`, only reuses a valid cached application and fails on a miss without selecting a model or reading an API key. Select `--provider openai` to create recommendations. The provider/model use the same precedence and defaults as `summarize`: CLI options, `AUDIGEST_LLM_PROVIDER` / `AUDIGEST_LLM_MODEL`, then cache-only `auto` / `gpt-6-luna`. `--no-cache` skips lookup but does not select a provider. OpenAI requires the optional SDK extra and `OPENAI_API_KEY`.
-
-OpenAI receives only the transcript title and indexed segment text plus selected relative filenames and their text. The combined serialized input is capped at 256 KiB. The prompt treats transcript and project contents as untrusted data. The structured result contains a concise overview and zero to six recommendations; each recommendation includes an idea, relevance, suggested action, an exact transcript quote, and an exact quote from one selected project file. Audigest verifies both quotes and the selected file path, then copies any timing or speaker only from the canonical transcript segment. If nothing applies, an empty recommendations list is valid.
+The selected provider receives the transcript title and indexed segment text plus selected relative filenames and their text. The combined serialized input is capped at 256 KiB. The prompt treats transcript and project contents as untrusted data. The structured result contains a concise overview and zero to six recommendations; each recommendation includes an idea, relevance, suggested action, an exact transcript quote, and an exact quote from one selected project file. Audigest verifies both quotes and the selected file path, then copies any timing or speaker only from the canonical transcript segment. If nothing applies, an empty recommendations list is valid.
 
 Application JSON and Markdown are stored separately under `<cache>/outputs/applications/<application-id>/`. Artifacts include only the project basename, selected relative filenames, and content hashes; the full local project root is not stored. Human mode writes Markdown to stdout; `--json` writes only the application JSON there. Missing transcript IDs and selected project files use exit code `3`; unsafe context, configuration, and storage failures use `2`; processor failures use `6`; missing local SDK uses `7`.
 
@@ -126,35 +137,35 @@ Application JSON and Markdown are stored separately under `<cache>/outputs/appli
 `english` extracts useful English-learning material from an already stored canonical transcript:
 
 ```bash
-uv run audigest english <transcript-id> --level B2
-uv run audigest english <transcript-id> --level C1 --provider openai --json
+uv run audigest english <transcript-id> --level B2 --provider auto
+uv run audigest english <transcript-id> --level C1 --provider anthropic --model claude-haiku-5-5 --json
 ```
 
 `--level` is required and accepts CEFR levels A1, A2, B1, B2, C1, or C2. For B2, Audigest prioritizes useful B2-to-C1 material instead of extracting every unfamiliar word. The processor reads only the stored transcript; it never resolves the original source, performs language detection, invokes acquisition, or runs STT. Multilingual or non-English source text is allowed, and a result may contain zero items when no useful English material is present.
 
-The default provider, `auto`, reuses only a matching valid result and fails on a cache miss without selecting a model or reading an API key. Select `--provider openai` to create a result. Provider and model selection use the same precedence and defaults as `summarize` and `apply`: CLI options, `AUDIGEST_LLM_PROVIDER` / `AUDIGEST_LLM_MODEL`, then cache-only `auto` / `gpt-6-luna`. `--no-cache` skips lookup but does not select a provider. OpenAI requires the optional SDK extra and `OPENAI_API_KEY`.
-
-OpenAI receives only the transcript title, requested level, and indexed segment text, with a 256 KiB serialized-input limit. The prompt treats transcript content as untrusted data. It returns an overview and zero to twelve high-value items such as vocabulary, phrases, collocations, phrasal verbs, idioms, constructions, and grammar patterns. Each item has an expression copied from an exact source quote, a meaning, a usage note, and one or two separately generated examples. Audigest verifies the quote and expression against the cited segment, then attaches timing or speaker only from the canonical transcript; untimed segments stay untimed. Requests use the fixed OpenAI endpoint, a 60-second timeout, no retries, no tools, disabled response storage, low reasoning effort, and an 8,000-token output limit.
+The selected provider receives only the transcript title, requested level, and indexed segment text, with a 256 KiB serialized input limit. The prompt treats transcript content as untrusted data. It returns an overview and zero to twelve high-value items such as vocabulary, phrases, collocations, phrasal verbs, idioms, constructions, and grammar patterns. Each item has an expression copied from an exact source quote, a meaning, a usage note, and one or two separately generated examples. Audigest verifies the quote and expression against the cited segment, then attaches timing or speaker only from the canonical transcript; untimed segments stay untimed. Requests use an 8,000-token output limit.
 
 English JSON and Markdown are stored separately under `<cache>/outputs/english/<english-id>/`. Human mode writes Markdown to stdout; `--json` writes only the English artifact JSON there. Missing transcript IDs use exit code `3`; invalid level/configuration or cache storage failures use `2`; processor failures use `6`; missing local SDK uses `7`.
 
 ## Complete transcript-to-output workflow
 
-Install the OpenAI extra and set `OPENAI_API_KEY` before the first processor request. Capture the canonical transcript ID from the JSON-only ingest output, then generate each output once with explicit provider selection:
+Install the chosen extra and set its API key privately before the first processor request. Capture the canonical transcript ID from the ingest JSON, then choose a provider. Repeat the processor commands with `llm_provider=openai` and `llm_model=gpt-5.4-mini` to use OpenAI.
 
 ```bash
-uv sync --all-groups --extra openai
-TRANSCRIPT_ID="$(uv run audigest ingest ./episode.md --json | uv run python -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+uv sync --locked --extra openai --extra anthropic
+TRANSCRIPT_ID="$(uv run audigest ingest ./episode.md --provider auto --json | uv run python -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
 uv run audigest show "$TRANSCRIPT_ID"
-uv run audigest summarize "$TRANSCRIPT_ID" --provider openai
-uv run audigest apply "$TRANSCRIPT_ID" --project ~/projects/my-app --provider openai
-uv run audigest english "$TRANSCRIPT_ID" --level B2 --provider openai
+llm_provider=anthropic
+llm_model=claude-haiku-5-5
+uv run audigest summarize "$TRANSCRIPT_ID" --provider "$llm_provider" --model "$llm_model"
+uv run audigest apply "$TRANSCRIPT_ID" --project ~/projects/my-app --provider "$llm_provider" --model "$llm_model"
+uv run audigest english "$TRANSCRIPT_ID" --level B2 --provider "$llm_provider" --model "$llm_model"
 ```
 
 The processors write separate results under `outputs/summaries/`, `outputs/applications/`, and `outputs/english/`; they leave the canonical transcript and project files unchanged. After each result is cached, the same requests can be repeated without credentials or model calls:
 
 ```bash
-unset OPENAI_API_KEY
+unset OPENAI_API_KEY ANTHROPIC_API_KEY
 uv run audigest summarize "$TRANSCRIPT_ID" --provider auto
 uv run audigest apply "$TRANSCRIPT_ID" --project ~/projects/my-app --provider auto
 uv run audigest english "$TRANSCRIPT_ID" --level B2 --provider auto
@@ -245,11 +256,12 @@ Configuration precedence is CLI flags, environment variables, optional TOML conf
 | --- | --- |
 | `AUDIGEST_STT_PROVIDER` | Provider for STT; defaults to `auto`, which is cache-only and errors on a cache miss. `ingest` uses it only as fallback; `transcribe` uses it for explicit STT. |
 | `AUDIGEST_LANGUAGE` | Optional transcription language. |
-| `AUDIGEST_LLM_PROVIDER` | Provider for `summarize`, `apply`, and `english`; defaults to cache-only `auto`. Set to `openai` to generate processor output on a cache miss. |
-| `AUDIGEST_LLM_MODEL` | OpenAI model for `summarize`, `apply`, and `english`; defaults to `gpt-6-luna`. |
+| `AUDIGEST_LLM_PROVIDER` | Provider for `summarize`, `apply`, and `english`; defaults to cache-only `auto`. Set to `openai` or `anthropic` to generate processor output on a cache miss. |
+| `AUDIGEST_LLM_MODEL` | Optional model override for `summarize`, `apply`, and `english`. Defaults depend on the selected provider. |
 | `AUDIGEST_CACHE_DIR` | Override the local cache root. |
 | `AUDIGEST_CONFIG_FILE` | Override the TOML config file path. |
 | `OPENAI_API_KEY` | Optional OpenAI API credential, used only when an explicitly selected OpenAI STT, summary, application, or English request has a cache miss. |
+| `ANTHROPIC_API_KEY` | Optional Anthropic API credential for explicitly selected Anthropic processor cache misses. |
 | `ELEVENLABS_API_KEY` | Optional ElevenLabs API credential, used only when the ElevenLabs provider is selected and a cache miss requires STT. |
 | `AUDIGEST_WHISPER_MODEL_DIR` | Local CTranslate2 model directory, used only by an explicitly selected `local` provider after a cache miss. |
 

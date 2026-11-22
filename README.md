@@ -7,7 +7,7 @@ Audigest is a local-first CLI for turning spoken or already-transcribed content 
 - Local canonical JSON, UTF-8 text/Markdown, SRT/VTT captions, and adjacent transcript sidecars.
 - Direct public HTTP(S) transcript and media URLs, single-video YouTube captions, narrow publisher episode pages, RSS 2.0 feeds, and Spotify episodes mapped through an explicit publisher feed.
 - Explicit OpenAI, ElevenLabs, or local Whisper STT; `fake` is available for offline CLI exercises.
-- Canonical-only `summarize`, read-only `apply`, and CEFR-level `english` processors.
+- Canonical-only `summarize`, read-only `apply`, and CEFR-level `english` processors with OpenAI or Anthropic.
 - Optional timestamps and speakers, JSON output for tools, Markdown output for people, and local cache reuse.
 
 RSS accepts only RSS 2.0. Spotify episode ingestion requires `--feed` unless a transcript is supplied, and its public oEmbed title must exactly match one RSS item after whitespace and case normalization. Publisher-page discovery uses a small set of explicitly marked transcript/caption patterns; Audigest does not crawl sites.
@@ -28,17 +28,20 @@ uv run audigest show <transcript-id>
 
 ## Generate processor outputs
 
-The `auto` provider is cache-only. For a new output, select OpenAI explicitly and provide `OPENAI_API_KEY` in your shell:
+The `auto` provider is cache-only. To generate output, install the optional SDK and select OpenAI or Anthropic explicitly. Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` privately in your shell.
 
 ```bash
-uv sync --all-groups --extra openai --frozen
-export OPENAI_API_KEY="your-key"
-uv run audigest summarize <transcript-id> --provider openai
-uv run audigest apply <transcript-id> --project ~/projects/my-app --provider openai
-uv run audigest english <transcript-id> --level B2 --provider openai
+uv sync --locked --extra openai --extra anthropic
+uv run audigest summarize <transcript-id> --provider openai --model gpt-5.4-mini
+uv run audigest apply <transcript-id> --project ~/projects/my-app --provider anthropic
+uv run audigest english <transcript-id> --level B2 --provider anthropic
 ```
 
 Once a result is cached, the same command can run with `--provider auto` without a key or model request. `--no-cache` bypasses lookup but does not select a provider. `apply` reads only the project `README.md` by default, never runs project commands, and never edits project files.
+
+## Agent Skill
+
+The [Audigest Agent Skill](skills/audigest/SKILL.md) wraps the CLI. Run `uv run --no-sync python scripts/build_agensi_skill.py` to create `dist/audigest-agensi-skill.zip`. The [Agensi publication guide](docs/agensi-publication.md) includes listing copy and owner submission steps.
 
 ## Privacy and validation
 

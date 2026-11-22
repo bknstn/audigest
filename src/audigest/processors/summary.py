@@ -11,11 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from audigest.errors import ProcessorError
 from audigest.models import Transcript, TranscriptSegment
+from audigest.processors.llm_config import REASONING_EFFORT as REASONING_EFFORT
+from audigest.processors.llm_config import LLMProviderName, reasoning_effort_for
 
 PROCESSOR_VERSION = "summary-v1"
 PROMPT_VERSION = "summary-prompt-v1"
 PROVIDER: Literal["openai"] = "openai"
-REASONING_EFFORT: Literal["low"] = "low"
 MAX_OUTPUT_TOKENS = 6000
 MAX_INPUT_BYTES = 256 * 1024
 MAX_KEY_POINTS = 6
@@ -79,9 +80,9 @@ class SummaryArtifact(BaseModel):
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     processor_version: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
-    provider: Literal["openai"] = "openai"
+    provider: LLMProviderName = "openai"
     model: str = Field(min_length=1)
-    reasoning_effort: Literal["low"] = REASONING_EFFORT
+    reasoning_effort: Literal["low"] | None = REASONING_EFFORT
     max_output_tokens: int = Field(default=MAX_OUTPUT_TOKENS, gt=0)
     created_at: datetime
     summary: str = Field(min_length=1, max_length=4000)
@@ -122,7 +123,9 @@ def summary_content_sha256(transcript: Transcript) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def summary_id_for(transcript: Transcript, model: str) -> str:
+def summary_id_for(
+    transcript: Transcript, model: str, *, provider: LLMProviderName = PROVIDER
+) -> str:
     """Return a deterministic identity covering input, prompt, provider, model, and options."""
 
     identity = {
@@ -130,9 +133,9 @@ def summary_id_for(transcript: Transcript, model: str) -> str:
         "prompt_version": PROMPT_VERSION,
         "transcript_id": transcript.id,
         "content_sha256": summary_content_sha256(transcript),
-        "provider": PROVIDER,
+        "provider": provider,
         "model": model,
-        "reasoning_effort": REASONING_EFFORT,
+        "reasoning_effort": reasoning_effort_for(provider),
         "max_output_tokens": MAX_OUTPUT_TOKENS,
     }
     encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -146,7 +149,9 @@ def _canonical_key_point(
     recover_generated_citations: bool,
 ) -> SummaryKeyPoint:
     if not draft.point.strip() or not draft.quote.strip():
-        raise ProcessorError("OpenAI returned a summary point with empty text or evidence.")
+        raise ProcessorError(
+            "The summary provider returned a summary point with empty text or evidence."
+        )
     segment_index = draft.segment_index
     index_in_range = segment_index < len(segments)
     if not index_in_range or draft.quote not in segments[segment_index].text:
@@ -158,9 +163,11 @@ def _canonical_key_point(
         if len(matches) != 1:
             if not index_in_range:
                 raise ProcessorError(
-                    "OpenAI returned a citation outside the transcript segment range."
+                    "The summary provider returned a citation outside the transcript segment range."
                 )
-            raise ProcessorError("OpenAI returned a quote that does not match its cited segment.")
+            raise ProcessorError(
+                "The summary provider returned a quote that does not match its cited segment."
+            )
         segment_index = matches[0]
     segment = segments[segment_index]
     return SummaryKeyPoint(

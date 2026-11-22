@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,20 +14,25 @@ from pydantic import ValidationError
 from audigest.config import load_config
 from audigest.errors import (
     AudigestError,
-    ConfigurationError,
     ProcessorError,
     SourceResolutionError,
     StorageError,
 )
 from audigest.models import Transcript
-from audigest.processors.openai import DEFAULT_MODEL, OpenAISummaryProvider
+from audigest.processors.llm import AnthropicProcessorProvider
+from audigest.processors.llm_config import (
+    DEFAULT_MODELS,
+    LLMProviderName,
+    cache_targets,
+    reasoning_effort_for,
+    select_llm,
+)
+from audigest.processors.openai import OpenAISummaryProvider
 from audigest.processors.storage import FileSummaryStore
 from audigest.processors.summary import (
     MAX_OUTPUT_TOKENS,
     PROCESSOR_VERSION,
     PROMPT_VERSION,
-    PROVIDER,
-    REASONING_EFFORT,
     SummaryArtifact,
     SummaryPointDraft,
     SummaryResponse,
@@ -37,8 +41,6 @@ from audigest.processors.summary import (
     summary_id_for,
 )
 from audigest.storage import FileTranscriptStore
-
-_MODEL_NAME = re.compile(r"[^\s\x00]{1,128}\Z")
 
 
 class SummaryProvider(Protocol):
@@ -61,29 +63,12 @@ class SummaryResult:
     cached: bool
 
 
-def _selection(
-    provider: str | None,
-    model: str | None,
-    environ: Mapping[str, str],
-) -> tuple[str, str]:
-    selected_provider = (
-        provider if provider is not None else environ.get("AUDIGEST_LLM_PROVIDER", "auto")
-    )
-    if selected_provider not in {"auto", "openai"}:
-        raise ConfigurationError("LLM provider must be one of: auto, openai")
-    selected_model = (
-        model if model is not None else environ.get("AUDIGEST_LLM_MODEL", DEFAULT_MODEL)
-    )
-    if not isinstance(selected_model, str) or _MODEL_NAME.fullmatch(selected_model) is None:
-        raise ConfigurationError("LLM model must be a non-empty name of at most 128 characters")
-    return selected_provider, selected_model
-
-
 def _check_cached_identity(
     artifact: SummaryArtifact,
     transcript: Transcript,
     *,
     summary_id: str,
+    provider: LLMProviderName,
     model: str,
 ) -> None:
     if (
@@ -92,9 +77,9 @@ def _check_cached_identity(
         or artifact.content_sha256 != summary_content_sha256(transcript)
         or artifact.processor_version != PROCESSOR_VERSION
         or artifact.prompt_version != PROMPT_VERSION
-        or artifact.provider != PROVIDER
+        or artifact.provider != provider
         or artifact.model != model
-        or artifact.reasoning_effort != REASONING_EFFORT
+        or artifact.reasoning_effort != reasoning_effort_for(provider)
         or artifact.max_output_tokens != MAX_OUTPUT_TOKENS
     ):
         raise StorageError("Summary cache entry does not match the transcript and request")
@@ -140,38 +125,42 @@ def summarize_transcript(
         )
     if not transcript.text.strip():
         raise ProcessorError("Cannot summarize a transcript with no non-whitespace text.")
-    selected_provider, selected_model = _selection(provider, model, os.environ)
-    summary_id = summary_id_for(transcript, selected_model)
+    selected_provider, requested_model = select_llm(provider, model, os.environ)
     summary_store = FileSummaryStore(config.cache_dir)
 
     if not no_cache:
-        cached = summary_store.get(summary_id)
-        if cached is not None:
-            _check_cached_identity(
-                cached,
-                transcript,
-                summary_id=summary_id,
-                model=selected_model,
-            )
-            return SummaryResult(
-                artifact=cached,
-                json_path=summary_store.path_for(summary_id) / "summary.json",
-                markdown_path=summary_store.path_for(summary_id) / "summary.md",
-                cached=True,
-            )
+        for cached_provider, cached_model in cache_targets(selected_provider, requested_model):
+            summary_id = summary_id_for(transcript, cached_model, provider=cached_provider)
+            cached = summary_store.get(summary_id)
+            if cached is not None:
+                _check_cached_identity(
+                    cached,
+                    transcript,
+                    summary_id=summary_id,
+                    provider=cached_provider,
+                    model=cached_model,
+                )
+                return SummaryResult(
+                    artifact=cached,
+                    json_path=summary_store.path_for(summary_id) / "summary.json",
+                    markdown_path=summary_store.path_for(summary_id) / "summary.md",
+                    cached=True,
+                )
 
     if selected_provider == "auto":
         raise ProcessorError(
             "No matching cached summary was found; provider 'auto' is cache-only. "
-            "Choose --provider openai to create a summary."
+            "Choose --provider openai or --provider anthropic to create a summary."
         )
 
+    selected_model = requested_model or DEFAULT_MODELS[selected_provider]
+    summary_id = summary_id_for(transcript, selected_model, provider=selected_provider)
     try:
-        if provider_factory is None:
-            selected: SummaryProvider = OpenAISummaryProvider(selected_model)
-        else:
-            selected = provider_factory(selected_model)
-        if selected.name != PROVIDER or selected.model != selected_model:
+        factory = provider_factory or (
+            OpenAISummaryProvider if selected_provider == "openai" else AnthropicProcessorProvider
+        )
+        selected = factory(selected_model)
+        if selected.name != selected_provider or selected.model != selected_model:
             raise ProcessorError("The selected summary provider returned inconsistent provenance.")
         response = selected.summarize(transcript)
     except AudigestError:
@@ -196,9 +185,9 @@ def summarize_transcript(
             content_sha256=summary_sha256,
             processor_version=PROCESSOR_VERSION,
             prompt_version=PROMPT_VERSION,
-            provider=PROVIDER,
+            provider=selected_provider,
             model=selected_model,
-            reasoning_effort=REASONING_EFFORT,
+            reasoning_effort=reasoning_effort_for(selected_provider),
             max_output_tokens=MAX_OUTPUT_TOKENS,
             created_at=datetime.now(UTC),
             summary=response.summary,

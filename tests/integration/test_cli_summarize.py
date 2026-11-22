@@ -95,7 +95,7 @@ def test_summarize_removed_source_json_markdown_and_cache_hit(
     monkeypatch.setattr("audigest.service.LocalFileResolver.resolve", unexpected)
     monkeypatch.setattr("audigest.service.LocalTranscriptAcquirer.acquire", unexpected)
     monkeypatch.setattr("audigest.service.get_provider", unexpected)
-    provider = SyntheticSummaryProvider("gpt-6-luna")
+    provider = SyntheticSummaryProvider("gpt-5.4-mini")
     monkeypatch.setattr(
         "audigest.processors.service.OpenAISummaryProvider",
         lambda model: provider if model == provider.model else pytest.fail("unexpected model"),
@@ -109,7 +109,7 @@ def test_summarize_removed_source_json_markdown_and_cache_hit(
     payload = json.loads(first.stdout)
     assert payload["transcript_id"] == transcript_id
     assert payload["provider"] == "openai"
-    assert payload["model"] == "gpt-6-luna"
+    assert payload["model"] == "gpt-5.4-mini"
     assert payload["summary"] == "A concise summary of the synthetic transcript."
     citation = payload["key_points"][0]["citation"]
     assert citation["segment_index"] == 0
@@ -197,7 +197,7 @@ def test_summarize_resolves_only_unique_exact_quotes_at_the_wrong_index(
                 ],
             )
 
-    provider = WrongIndexProvider("gpt-6-luna")
+    provider = WrongIndexProvider("gpt-5.4-mini")
     monkeypatch.setattr(
         "audigest.processors.service.OpenAISummaryProvider", lambda _model: provider
     )
@@ -263,7 +263,7 @@ def test_content_and_timing_changes_invalidate_and_no_cache_refreshes(
     ingested = runner.invoke(app, ["ingest", str(source), "--json"])
     transcript_id = json.loads(ingested.stdout)["id"]
     source.unlink()
-    provider = SyntheticSummaryProvider("gpt-6-luna")
+    provider = SyntheticSummaryProvider("gpt-5.4-mini")
     monkeypatch.setattr(
         "audigest.processors.service.OpenAISummaryProvider",
         lambda _model: provider,
@@ -431,7 +431,7 @@ def test_empty_stored_transcript_is_rejected_before_provider_selection(
             "cli-model",
         ),
         ([], {"AUDIGEST_LLM_PROVIDER": "openai", "AUDIGEST_LLM_MODEL": "env-model"}, "env-model"),
-        (["--provider", "openai"], {}, "gpt-6-luna"),
+        (["--provider", "openai"], {}, "gpt-5.4-mini"),
     ],
 )
 def test_llm_selection_precedence_is_independent_of_stt_settings(
@@ -535,7 +535,7 @@ def test_unexpected_provider_errors_are_sanitized_and_expected_errors_preserved(
 
     class FailingProvider:
         name = "openai"
-        model = "gpt-6-luna"
+        model = "gpt-5.4-mini"
 
         def summarize(self, _transcript: Transcript) -> SummaryResponse:
             raise failure

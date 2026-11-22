@@ -12,7 +12,8 @@ Start with the [project overview](../README.md), then use the guide that matches
 ## Using Audigest
 
 - [Detailed usage guide](usage.md): source formats, providers, processors, caching, outputs, limits, setup, and error recovery.
-- [Changelog](CHANGELOG.md): initial `0.1.0` milestone and validation caveats.
+- [Changelog](CHANGELOG.md): release history and validation caveats.
 - [Versioning policy](versioning.md): version source, compatibility policy, and release/tag procedure.
+- Build the skill ZIP and prepare the marketplace listing. [Agensi publication guide](agensi-publication.md)
 
 The [MIT license](../LICENSE) is kept at the repository root.

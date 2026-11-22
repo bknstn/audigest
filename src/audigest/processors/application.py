@@ -11,10 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from audigest.errors import ProcessorError
 from audigest.models import Transcript, TranscriptSegment
-from audigest.processors.openai import DEFAULT_MODEL
+from audigest.processors.llm_config import DEFAULT_MODELS, LLMProviderName, reasoning_effort_for
 from audigest.processors.project_context import ProjectContext, ProjectContextFile
 from audigest.processors.summary import MAX_OUTPUT_TOKENS, REASONING_EFFORT
 
+DEFAULT_MODEL = DEFAULT_MODELS["openai"]
 APPLICATION_VERSION = "application-v1"
 PROMPT_VERSION = "application-prompt-v1"
 MAX_INPUT_BYTES = 256 * 1024
@@ -151,9 +152,9 @@ class ApplicationArtifact(BaseModel):
     context_files: list[ApplicationContextFile] = Field(min_length=1, max_length=16)
     processor_version: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
-    provider: Literal["openai"] = PROVIDER
+    provider: LLMProviderName = PROVIDER
     model: str = Field(min_length=1)
-    reasoning_effort: Literal["low"] = REASONING_EFFORT
+    reasoning_effort: Literal["low"] | None = REASONING_EFFORT
     max_output_tokens: int = Field(default=MAX_OUTPUT_TOKENS, gt=0)
     created_at: datetime
     overview: str = Field(min_length=1, max_length=2000)
@@ -210,6 +211,8 @@ def application_id_for(
     transcript: Transcript,
     project: ProjectContext,
     model: str,
+    *,
+    provider: LLMProviderName = PROVIDER,
 ) -> str:
     """Return a cache identity covering transcript, project, provider, and options."""
 
@@ -226,9 +229,9 @@ def application_id_for(
             }
             for context_file in project.files
         ],
-        "provider": PROVIDER,
+        "provider": provider,
         "model": model,
-        "reasoning_effort": REASONING_EFFORT,
+        "reasoning_effort": reasoning_effort_for(provider),
         "max_output_tokens": MAX_OUTPUT_TOKENS,
     }
     encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

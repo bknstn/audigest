@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from audigest.errors import ProcessorError
 from audigest.models import Transcript, TranscriptSegment
+from audigest.processors.llm_config import REASONING_EFFORT as REASONING_EFFORT
+from audigest.processors.llm_config import LLMProviderName, reasoning_effort_for
 
 CEFRLevel = Literal["A1", "A2", "B1", "B2", "C1", "C2"]
 EnglishItemKind = Literal[
@@ -27,7 +29,6 @@ ExampleSentence = Annotated[str, Field(min_length=1, max_length=400)]
 PROCESSOR_VERSION = "english-v1"
 PROMPT_VERSION = "english-prompt-v1"
 PROVIDER: Literal["openai"] = "openai"
-REASONING_EFFORT: Literal["low"] = "low"
 MAX_OUTPUT_TOKENS = 8000
 MAX_INPUT_BYTES = 256 * 1024
 MAX_ITEMS = 12
@@ -128,9 +129,9 @@ class EnglishArtifact(BaseModel):
     level: CEFRLevel
     processor_version: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
-    provider: Literal["openai"] = PROVIDER
+    provider: LLMProviderName = PROVIDER
     model: str = Field(min_length=1)
-    reasoning_effort: Literal["low"] = REASONING_EFFORT
+    reasoning_effort: Literal["low"] | None = REASONING_EFFORT
     max_output_tokens: int = Field(default=MAX_OUTPUT_TOKENS, gt=0)
     created_at: datetime
     overview: str = Field(min_length=1, max_length=2000)
@@ -179,7 +180,9 @@ def english_content_sha256(transcript: Transcript, level: CEFRLevel) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def english_id_for(transcript: Transcript, level: CEFRLevel, model: str) -> str:
+def english_id_for(
+    transcript: Transcript, level: CEFRLevel, model: str, *, provider: LLMProviderName = PROVIDER
+) -> str:
     """Return deterministic identity for all consumed content and generation options."""
 
     identity = {
@@ -188,9 +191,9 @@ def english_id_for(transcript: Transcript, level: CEFRLevel, model: str) -> str:
         "transcript_id": transcript.id,
         "content_sha256": english_content_sha256(transcript, level),
         "level": level,
-        "provider": PROVIDER,
+        "provider": provider,
         "model": model,
-        "reasoning_effort": REASONING_EFFORT,
+        "reasoning_effort": reasoning_effort_for(provider),
         "max_output_tokens": MAX_OUTPUT_TOKENS,
     }
     encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

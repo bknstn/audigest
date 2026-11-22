@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,8 +25,6 @@ from audigest.processors.english import (
     MAX_OUTPUT_TOKENS,
     PROCESSOR_VERSION,
     PROMPT_VERSION,
-    PROVIDER,
-    REASONING_EFFORT,
     CEFRLevel,
     EnglishArtifact,
     EnglishItemDraft,
@@ -38,10 +35,17 @@ from audigest.processors.english import (
     english_input_json,
 )
 from audigest.processors.english_storage import FileEnglishStore
-from audigest.processors.openai_english import DEFAULT_MODEL, OpenAIEnglishProvider
+from audigest.processors.llm import AnthropicProcessorProvider
+from audigest.processors.llm_config import (
+    DEFAULT_MODELS,
+    LLMProviderName,
+    cache_targets,
+    reasoning_effort_for,
+    select_llm,
+)
+from audigest.processors.openai_english import OpenAIEnglishProvider
 from audigest.storage import FileTranscriptStore
 
-_MODEL_NAME = re.compile(r"[^\s\x00]{1,128}\Z")
 _LEVELS = frozenset({"A1", "A2", "B1", "B2", "C1", "C2"})
 
 
@@ -71,30 +75,13 @@ def _level(value: str) -> CEFRLevel:
     return cast(CEFRLevel, value)
 
 
-def _selection(
-    provider: str | None,
-    model: str | None,
-    environ: Mapping[str, str],
-) -> tuple[str, str]:
-    selected_provider = (
-        provider if provider is not None else environ.get("AUDIGEST_LLM_PROVIDER", "auto")
-    )
-    if selected_provider not in {"auto", PROVIDER}:
-        raise ConfigurationError("LLM provider must be one of: auto, openai")
-    selected_model = (
-        model if model is not None else environ.get("AUDIGEST_LLM_MODEL", DEFAULT_MODEL)
-    )
-    if not isinstance(selected_model, str) or _MODEL_NAME.fullmatch(selected_model) is None:
-        raise ConfigurationError("LLM model must be a non-empty name of at most 128 characters")
-    return selected_provider, selected_model
-
-
 def _check_cached_identity(
     artifact: EnglishArtifact,
     transcript: Transcript,
     *,
     level: CEFRLevel,
     english_id: str,
+    provider: LLMProviderName,
     model: str,
 ) -> None:
     if (
@@ -104,9 +91,9 @@ def _check_cached_identity(
         or artifact.level != level
         or artifact.processor_version != PROCESSOR_VERSION
         or artifact.prompt_version != PROMPT_VERSION
-        or artifact.provider != PROVIDER
+        or artifact.provider != provider
         or artifact.model != model
-        or artifact.reasoning_effort != REASONING_EFFORT
+        or artifact.reasoning_effort != reasoning_effort_for(provider)
         or artifact.max_output_tokens != MAX_OUTPUT_TOKENS
     ):
         raise StorageError("English cache entry does not match the transcript and request")
@@ -159,32 +146,36 @@ def english_transcript(
     if not transcript.text.strip():
         raise ProcessorError("Cannot process a transcript with no non-whitespace text.")
 
-    selected_provider, selected_model = _selection(provider, model, os.environ)
-    english_id = english_id_for(transcript, selected_level, selected_model)
+    selected_provider, requested_model = select_llm(provider, model, os.environ)
     english_store = FileEnglishStore(config.cache_dir)
 
     if not no_cache:
-        cached = english_store.get(english_id)
-        if cached is not None:
-            _check_cached_identity(
-                cached,
-                transcript,
-                level=selected_level,
-                english_id=english_id,
-                model=selected_model,
+        for cached_provider, cached_model in cache_targets(selected_provider, requested_model):
+            english_id = english_id_for(
+                transcript, selected_level, cached_model, provider=cached_provider
             )
-            entry = english_store.path_for(english_id)
-            return EnglishResult(
-                artifact=cached,
-                json_path=entry / "english.json",
-                markdown_path=entry / "english.md",
-                cached=True,
-            )
+            cached = english_store.get(english_id)
+            if cached is not None:
+                _check_cached_identity(
+                    cached,
+                    transcript,
+                    level=selected_level,
+                    english_id=english_id,
+                    provider=cached_provider,
+                    model=cached_model,
+                )
+                entry = english_store.path_for(english_id)
+                return EnglishResult(
+                    artifact=cached,
+                    json_path=entry / "english.json",
+                    markdown_path=entry / "english.md",
+                    cached=True,
+                )
 
     if selected_provider == "auto":
         raise ProcessorError(
             "No matching cached English result was found; provider 'auto' is cache-only. "
-            "Choose --provider openai to create one."
+            "Choose --provider openai or --provider anthropic to create one."
         )
 
     input_json = english_input_json(transcript, selected_level)
@@ -194,12 +185,16 @@ def english_transcript(
             "(maximum input is 256 KiB)."
         )
 
+    selected_model = requested_model or DEFAULT_MODELS[selected_provider]
+    english_id = english_id_for(
+        transcript, selected_level, selected_model, provider=selected_provider
+    )
     try:
-        if provider_factory is None:
-            selected: EnglishProvider = OpenAIEnglishProvider(selected_model)
-        else:
-            selected = provider_factory(selected_model)
-        if selected.name != PROVIDER or selected.model != selected_model:
+        factory = provider_factory or (
+            OpenAIEnglishProvider if selected_provider == "openai" else AnthropicProcessorProvider
+        )
+        selected = factory(selected_model)
+        if selected.name != selected_provider or selected.model != selected_model:
             raise ProcessorError("The selected English provider returned inconsistent provenance.")
         response = selected.extract(transcript, selected_level)
     except AudigestError:
@@ -236,9 +231,9 @@ def english_transcript(
             level=selected_level,
             processor_version=PROCESSOR_VERSION,
             prompt_version=PROMPT_VERSION,
-            provider=PROVIDER,
+            provider=selected_provider,
             model=selected_model,
-            reasoning_effort=REASONING_EFFORT,
+            reasoning_effort=reasoning_effort_for(selected_provider),
             max_output_tokens=MAX_OUTPUT_TOKENS,
             created_at=datetime.now(UTC),
             overview=response.overview,

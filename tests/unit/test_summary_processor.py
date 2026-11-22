@@ -201,7 +201,7 @@ def test_openai_request_uses_fixed_bounded_structured_responses_options(
         "max_retries": 0,
     }
     assert responses.request is not None
-    assert responses.request["model"] == "gpt-6-luna"
+    assert responses.request["model"] == "gpt-5.4-mini"
     assert responses.request["store"] is False
     assert responses.request["max_output_tokens"] == MAX_OUTPUT_TOKENS == 6000
     assert responses.request["reasoning"] == {"effort": REASONING_EFFORT}

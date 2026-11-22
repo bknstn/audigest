@@ -282,12 +282,12 @@ def _summarize(
     provider: str | None = typer.Option(
         None,
         "--provider",
-        help="Summary provider; 'auto' only reuses a cached result, 'openai' can create one.",
+        help="LLM provider: auto (cache only), openai, or anthropic.",
     ),
     model: str | None = typer.Option(
         None,
         "--model",
-        help="OpenAI model name; defaults to AUDIGEST_LLM_MODEL or gpt-6-luna.",
+        help="Model name. Defaults to AUDIGEST_LLM_MODEL or the selected provider’s default.",
     ),
     json_output: bool = typer.Option(
         False,
@@ -342,12 +342,12 @@ def _apply(
     provider: str | None = typer.Option(
         None,
         "--provider",
-        help="Application provider; 'auto' only reuses a cached result, 'openai' can create one.",
+        help="LLM provider: auto (cache only), openai, or anthropic.",
     ),
     model: str | None = typer.Option(
         None,
         "--model",
-        help="OpenAI model name; defaults to AUDIGEST_LLM_MODEL or gpt-6-luna.",
+        help="Model name. Defaults to AUDIGEST_LLM_MODEL or the selected provider’s default.",
     ),
     json_output: bool = typer.Option(
         False,
@@ -396,15 +396,12 @@ def _english(
     provider: str | None = typer.Option(
         None,
         "--provider",
-        help=(
-            "English processor provider; 'auto' only reuses a cached result, "
-            "'openai' can create one."
-        ),
+        help="LLM provider: auto (cache only), openai, or anthropic.",
     ),
     model: str | None = typer.Option(
         None,
         "--model",
-        help="OpenAI model name; defaults to AUDIGEST_LLM_MODEL or gpt-6-luna.",
+        help="Model name. Defaults to AUDIGEST_LLM_MODEL or the selected provider’s default.",
     ),
     json_output: bool = typer.Option(
         False,
